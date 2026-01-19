@@ -206,12 +206,12 @@ class LifecycleManager:
             if data_manager and data_manager.refresh_timer:
                 data_manager.refresh_timer.cancel()
                 data_manager.refresh_timer = None
-                self.logger.info("刷新定时器已停止")
+                self.logger.debug("刷新定时器已停止")
             
             if self._task_monitor_timer:
                 self._task_monitor_timer.cancel()
                 self._task_monitor_timer = None
-                self.logger.info("任务监控定时器已停止")
+                self.logger.debug("任务监控定时器已停止")
             
             # 2. 取消所有异步任务
             try:
@@ -235,9 +235,9 @@ class LifecycleManager:
                         asyncio.gather(*pending_tasks, return_exceptions=True),
                         timeout=2.0
                     )
-                    self.logger.info("异步任务取消完成")
+                    self.logger.debug("异步任务取消完成")
                 else:
-                    self.logger.info("没有待处理任务需要取消")
+                    self.logger.debug("没有待处理任务需要取消")
             except asyncio.TimeoutError:
                 self.logger.warning("部分异步任务取消超时")
             except Exception as e:

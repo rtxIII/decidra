@@ -485,7 +485,7 @@ class UIManager:
                 self.logger.warning("orders_table 未初始化，跳过更新")
                 return
 
-            self.logger.info(f"开始更新订单表格，当前有 {len(self.app_core.order_data)} 条订单")
+            self.logger.debug(f"开始更新订单表格，当前有 {len(self.app_core.order_data)} 条订单")
 
             # 调试：打印order_data的前2条数据
             if self.app_core.order_data:
@@ -655,7 +655,7 @@ class UIManager:
 
             # 检查表格行数
             table_row_count = self.position_table.row_count
-            self.logger.info(f"持仓表格UI更新完成，app_core有 {len(self.app_core.position_data)} 只持仓，表格显示 {table_row_count} 行")
+            self.logger.debug(f"持仓表格UI更新完成，app_core有 {len(self.app_core.position_data)} 只持仓，表格显示 {table_row_count} 行")
 
             # 强制刷新表格显示
             self.position_table.refresh()

@@ -433,7 +433,7 @@ class UserDataManager:
                         }
                         self.app_core.position_data.append(position_data)
             
-            self.logger.info(f"加载用户持仓完成，共 {len(self.app_core.position_data)} 只股票")
+            self.logger.debug(f"加载用户持仓完成，共 {len(self.app_core.position_data)} 只股票")
             
         except Exception as e:
             self.logger.error(f"加载用户持仓失败: {e}")
@@ -454,7 +454,7 @@ class UserDataManager:
 
     async def load_user_orders(self) -> None:
         """加载用户订单数据到 app_core.order_data"""
-        self.logger.info("开始加载用户订单数据")
+        self.logger.debug("开始加载用户订单数据")
 
         try:
             # 引用app中的futu_trade实例
@@ -505,7 +505,7 @@ class UserDataManager:
                 self.logger.info(f"加载用户订单完成，共 {len(user_orders)} 条订单保存到 app_core.order_data")
             else:
                 # API返回None或空列表时，保留现有数据不清空
-                self.logger.info(f"API返回空订单列表，保留现有数据({len(self.app_core.order_data)}条)")
+                self.logger.warning(f"API返回空订单列表，保留现有数据({len(self.app_core.order_data)}条)")
 
         except Exception as e:
             self.logger.error(f"加载用户订单失败: {e}")

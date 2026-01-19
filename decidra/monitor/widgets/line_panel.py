@@ -36,6 +36,7 @@ try:
     from ...monitor.widgets.window_dialog import WindowInputDialog
     from ...monitor.widgets.thinking_animation import ThinkingAnimation
     from ...monitor.widgets.order_dialog import PlaceOrderDialog, OrderData
+    from ...monitor.widgets.ai_quick_dialog import AIDialogResult
     from ...base.ai import AIAnalysisRequest, AITradingAdviceRequest
     AI_MODULES_AVAILABLE = True
 except ImportError:
@@ -46,6 +47,7 @@ except ImportError:
     ThinkingAnimation = None
     PlaceOrderDialog = None
     OrderData = None
+    AIDialogResult = None
     AIAnalysisRequest = None
     AITradingAdviceRequest = None
     AI_MODULES_AVAILABLE = False
@@ -838,16 +840,29 @@ class InfoPanel(Widget):
             self.logger.info(f"[AI-DIALOG] AI对话框已创建: stock_code={stock_code}, stock_name={stock_name}")
 
             # 使用 await 直接等待对话框结果
-            user_input = await self.app.push_screen_wait(ai_dialog)
+            dialog_result = await self.app.push_screen_wait(ai_dialog)
 
             # 用户取消或未输入
-            if not user_input or not user_input.strip():
-                self.logger.debug("用户取消AI对话或未输入内容")
+            if dialog_result is None:
+                self.logger.debug("用户取消AI对话")
                 return
 
-            # 直接处理用户输入 - 一步到位
-            self.logger.info(f"收到用户AI请求: {user_input.strip()}")
-            await self._process_ai_request(user_input.strip())
+            # 解析对话框返回结果 (AIDialogResult: question, is_custom)
+            if AIDialogResult and isinstance(dialog_result, AIDialogResult):
+                user_input = dialog_result.question
+                is_custom_input = dialog_result.is_custom
+            else:
+                # 兼容旧格式（纯字符串）
+                user_input = str(dialog_result).strip() if dialog_result else ""
+                is_custom_input = True  # 默认当作自定义输入处理
+
+            if not user_input:
+                self.logger.debug("用户未输入内容")
+                return
+
+            # 直接处理用户输入
+            self.logger.info(f"收到用户AI请求: {user_input}, is_custom={is_custom_input}")
+            await self._process_ai_request(user_input, use_tool_call=is_custom_input)
 
         except Exception as e:
             self.logger.error(f"AI对话框交互失败: {e}")
@@ -858,9 +873,14 @@ class InfoPanel(Widget):
                 source="AI助手"
             )
 
-    async def _process_ai_request(self, user_input: str) -> None:
-        """处理AI请求并显示响应"""
-        self.logger.info(f"开始处理AI请求: {user_input}")
+    async def _process_ai_request(self, user_input: str, use_tool_call: bool = False) -> None:
+        """处理AI请求并显示响应
+
+        Args:
+            user_input: 用户输入的问题
+            use_tool_call: 是否使用tool use模式（自定义输入时为True，预设问题时为False）
+        """
+        self.logger.info(f"开始处理AI请求: {user_input}, use_tool_call={use_tool_call}")
 
         if not user_input.strip():
             self.logger.warning(f"用户输入为空，返回")
@@ -893,6 +913,58 @@ class InfoPanel(Widget):
             context = self._prepare_unified_context()
             stock_code = context.get('current_stock', 'HK.00700')
 
+            # 自定义输入：使用 chat_with_ai 方法走 tool use 流程
+            if use_tool_call:
+                self.logger.info(f"自定义输入，使用 chat_with_ai (tool use 模式)")
+
+                # 创建进度消息ID，用于更新同一条消息
+                self._tool_use_progress_parts = ["🔄 AI正在分析..."]
+
+                # 创建进度回调函数
+                def tool_use_progress_callback(event_type: str, data: dict):
+                    """Tool use 进度回调"""
+                    tool_name_map = {
+                        'get_realtime_quote': '实时行情',
+                        'get_stock_kline': 'K线数据',
+                        'get_capital_flow': '资金流向',
+                        'get_orderbook': '五档买卖盘',
+                        'get_stock_basicinfo': '基本信息'
+                    }
+
+                    if event_type == 'tool_start':
+                        tool_name = data.get('tool_name', '')
+                        display_name = tool_name_map.get(tool_name, tool_name)
+                        self._tool_use_progress_parts.append(f"📡 正在获取{display_name}...")
+                        self.logger.info(f"[PROGRESS] 工具调用开始: {display_name}")
+
+                    elif event_type == 'tool_end':
+                        tool_name = data.get('tool_name', '')
+                        display_name = tool_name_map.get(tool_name, tool_name)
+                        # 更新最后一条为完成状态
+                        if self._tool_use_progress_parts:
+                            self._tool_use_progress_parts[-1] = f"✅ 已获取{display_name}"
+                        self.logger.info(f"[PROGRESS] 工具调用完成: {display_name}")
+
+                    elif event_type == 'thinking':
+                        self._tool_use_progress_parts.append("🤔 AI正在分析数据...")
+                        self.logger.info(f"[PROGRESS] AI继续思考...")
+
+                # 调用支持 tool use 的对话方法
+                response_text = await ai_client.chat_with_ai(
+                    user_message=user_input,
+                    stock_context=context,
+                    use_tools=True,
+                    progress_callback=tool_use_progress_callback
+                )
+
+                # 停止思考动画
+                await self._stop_thinking_animation()
+
+                # 显示AI回复（包含工具调用过程）
+                await self._display_chat_response_with_progress(response_text, self._tool_use_progress_parts)
+                return
+
+            # 预设问题：走原有的结构化分析流程
             # 如果技术指标为空，主动加载分析数据
             if not context.get('technical_indicators'):
                 self.logger.info(f"技术指标为空，主动加载股票 {stock_code} 的分析数据...")
@@ -1430,6 +1502,111 @@ class InfoPanel(Widget):
         except Exception as e:
             self.logger.error(f"确保分析数据加载失败: {e}")
             return False
+
+    async def _display_chat_response(self, response_text: str) -> None:
+        """显示AI对话响应（tool use模式的返回结果）
+
+        Args:
+            response_text: AI响应的文本内容
+        """
+        try:
+            if not response_text:
+                await self.add_info(
+                    content="AI未返回有效响应",
+                    info_type=InfoType.WARNING,
+                    level=InfoLevel.WARNING,
+                    source="AI助手"
+                )
+                return
+
+            # 构建格式化的对话响应
+            content_parts = [
+                "💬 AI智能回复",
+                "=" * 50,
+                "",
+                response_text
+            ]
+
+            formatted_content = "\n".join(content_parts)
+
+            # 显示AI回复
+            await self.add_info(
+                content=formatted_content,
+                info_type=InfoType.LOG,
+                level=InfoLevel.INFO,
+                source="AI助手"
+            )
+
+            # 自动选中AI回复的消息，方便用户查看详情
+            await self.select_last_message()
+
+        except Exception as e:
+            self.logger.error(f"显示对话响应失败: {e}")
+            await self.add_info(
+                content=f"显示AI回复失败: {str(e)}",
+                info_type=InfoType.ERROR,
+                level=InfoLevel.ERROR,
+                source="AI助手"
+            )
+
+    async def _display_chat_response_with_progress(self, response_text: str, progress_parts: list) -> None:
+        """显示AI对话响应（包含tool use进度信息）
+
+        Args:
+            response_text: AI响应的文本内容
+            progress_parts: 工具调用进度信息列表
+        """
+        try:
+            if not response_text:
+                await self.add_info(
+                    content="AI未返回有效响应",
+                    info_type=InfoType.WARNING,
+                    level=InfoLevel.WARNING,
+                    source="AI助手"
+                )
+                return
+
+            # 构建包含进度信息的格式化响应
+            content_parts = [
+                "💬 AI智能回复 (Tool Use)",
+                "=" * 50,
+                "",
+                "📋 数据获取过程:",
+            ]
+
+            # 添加进度信息
+            for progress in progress_parts:
+                content_parts.append(f"  {progress}")
+
+            content_parts.extend([
+                "",
+                "-" * 50,
+                "",
+                "📝 分析结果:",
+                response_text
+            ])
+
+            formatted_content = "\n".join(content_parts)
+
+            # 显示AI回复
+            await self.add_info(
+                content=formatted_content,
+                info_type=InfoType.LOG,
+                level=InfoLevel.INFO,
+                source="AI助手"
+            )
+
+            # 自动选中AI回复的消息，方便用户查看详情
+            await self.select_last_message()
+
+        except Exception as e:
+            self.logger.error(f"显示对话响应失败: {e}")
+            await self.add_info(
+                content=f"显示AI回复失败: {str(e)}",
+                info_type=InfoType.ERROR,
+                level=InfoLevel.ERROR,
+                source="AI助手"
+            )
 
     async def _display_analysis_response(self, response) -> None:
         """显示AI股票分析响应

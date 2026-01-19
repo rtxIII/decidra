@@ -456,7 +456,7 @@ class TradeManager:
             #print(data)
             df = self._handle_response(ret, data, "获取持仓列表")
             
-            self.logger.info(f"获取 {trd_env} 环境持仓列表成功")
+            self.logger.debug(f"获取 {trd_env} 环境持仓列表成功")
             return df
             
         except Exception as e:

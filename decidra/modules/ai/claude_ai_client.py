@@ -599,7 +599,8 @@ class ClaudeAIClient:
             self.mcp_server = self.mcp_server_builder.create_mcp_server()
         return self.mcp_server
 
-    def _call_anthropic_with_tools(self, system_prompt: str, user_message: str, use_tools: bool = True) -> str:
+    def _call_anthropic_with_tools(self, system_prompt: str, user_message: str, use_tools: bool = True,
+                                     progress_callback: callable = None) -> str:
         """
         使用Anthropic SDK调用API，支持工具调用循环
 
@@ -607,26 +608,37 @@ class ClaudeAIClient:
             system_prompt: 系统提示词
             user_message: 用户消息
             use_tools: 是否启用工具调用
+            progress_callback: 进度回调函数，签名为 callback(event_type: str, data: dict)
+                              event_type 可为: 'tool_start', 'tool_end', 'thinking', 'response'
 
         Returns:
             str: AI响应文本
         """
+        self.logger.info(f"[TOOL-USE] ========== _call_anthropic_with_tools 开始 ==========")
+        self.logger.info(f"[TOOL-USE] use_tools参数: {use_tools}")
+        self.logger.info(f"[TOOL-USE] progress_callback: {'有' if progress_callback else '无'}")
+
         if not self.anthropic_available:
+            self.logger.error("[TOOL-USE] Anthropic SDK不可用")
             raise RuntimeError("Anthropic SDK不可用")
 
         messages = [{"role": "user", "content": user_message}]
 
         # 决定是否使用工具
         tools = STOCK_DATA_TOOLS if use_tools and self.is_tool_use_available() else None
+        self.logger.info(f"[TOOL-USE] 工具列表: {[t['name'] for t in tools] if tools else '无'}")
+        self.logger.info(f"[TOOL-USE] 使用模型: {self.anthropic_model}, max_tokens: {self.anthropic_max_tokens}")
 
         max_iterations = 10  # 防止无限循环
         iteration = 0
 
         while iteration < max_iterations:
             iteration += 1
+            self.logger.info(f"[TOOL-USE] ===== 迭代 {iteration}/{max_iterations} =====")
 
             # 调用API
             try:
+                self.logger.info(f"[TOOL-USE] 调用Anthropic API...")
                 if tools:
                     response = self.anthropic_client.messages.create(
                         model=self.anthropic_model,
@@ -642,12 +654,14 @@ class ClaudeAIClient:
                         system=system_prompt,
                         messages=messages
                     )
+                self.logger.info(f"[TOOL-USE] API响应 stop_reason: {response.stop_reason}")
             except Exception as e:
-                self.logger.error(f"Anthropic API调用失败: {e}")
+                self.logger.error(f"[TOOL-USE] Anthropic API调用失败: {e}")
                 raise
 
             # 检查是否需要处理工具调用
             if response.stop_reason == "tool_use":
+                self.logger.info(f"[TOOL-USE] >>> 检测到工具调用请求 <<<")
                 # 处理工具调用
                 tool_results = []
                 assistant_content = response.content
@@ -658,12 +672,38 @@ class ClaudeAIClient:
                         tool_input = content_block.input
                         tool_use_id = content_block.id
 
-                        self.logger.info(f"执行工具调用: {tool_name}, 输入: {tool_input}")
+                        self.logger.info(f"[TOOL-USE] 工具名称: {tool_name}")
+                        self.logger.info(f"[TOOL-USE] 工具输入: {tool_input}")
+                        self.logger.info(f"[TOOL-USE] 工具ID: {tool_use_id}")
+
+                        # 通知进度：工具调用开始
+                        if progress_callback:
+                            try:
+                                progress_callback('tool_start', {
+                                    'tool_name': tool_name,
+                                    'tool_input': tool_input,
+                                    'iteration': iteration
+                                })
+                            except Exception as cb_error:
+                                self.logger.warning(f"[TOOL-USE] 进度回调失败: {cb_error}")
 
                         # 执行工具
+                        self.logger.info(f"[TOOL-USE] 开始执行工具 {tool_name}...")
                         tool_result = self.tool_executor.execute_tool(tool_name, tool_input)
 
-                        self.logger.debug(f"工具执行结果: {tool_result[:200]}...")
+                        self.logger.info(f"[TOOL-USE] 工具执行完成，结果长度: {len(tool_result)}")
+                        self.logger.debug(f"[TOOL-USE] 工具执行结果: {tool_result[:500]}...")
+
+                        # 通知进度：工具调用结束
+                        if progress_callback:
+                            try:
+                                progress_callback('tool_end', {
+                                    'tool_name': tool_name,
+                                    'tool_result_length': len(tool_result),
+                                    'iteration': iteration
+                                })
+                            except Exception as cb_error:
+                                self.logger.warning(f"[TOOL-USE] 进度回调失败: {cb_error}")
 
                         tool_results.append({
                             "type": "tool_result",
@@ -674,19 +714,32 @@ class ClaudeAIClient:
                 # 将助手消息和工具结果添加到消息历史
                 messages.append({"role": "assistant", "content": assistant_content})
                 messages.append({"role": "user", "content": tool_results})
+                self.logger.info(f"[TOOL-USE] 已将工具结果添加到消息历史，继续对话...")
+
+                # 通知进度：继续思考
+                if progress_callback:
+                    try:
+                        progress_callback('thinking', {
+                            'iteration': iteration,
+                            'tools_called': [t['tool_use_id'] for t in tool_results]
+                        })
+                    except Exception as cb_error:
+                        self.logger.warning(f"[TOOL-USE] 进度回调失败: {cb_error}")
 
             elif response.stop_reason == "end_turn":
+                self.logger.info(f"[TOOL-USE] >>> 对话正常结束 <<<")
                 # 正常结束，提取文本响应
                 result_text = ""
                 for content_block in response.content:
                     if hasattr(content_block, 'text'):
                         result_text += content_block.text
 
+                self.logger.info(f"[TOOL-USE] 最终响应长度: {len(result_text)}")
                 return result_text
 
             else:
                 # 其他停止原因
-                self.logger.warning(f"未预期的停止原因: {response.stop_reason}")
+                self.logger.warning(f"[TOOL-USE] 未预期的停止原因: {response.stop_reason}")
                 result_text = ""
                 for content_block in response.content:
                     if hasattr(content_block, 'text'):
@@ -694,10 +747,11 @@ class ClaudeAIClient:
                 return result_text
 
         # 超过最大迭代次数
-        self.logger.warning(f"工具调用循环超过最大次数 {max_iterations}")
+        self.logger.warning(f"[TOOL-USE] 工具调用循环超过最大次数 {max_iterations}")
         return "分析过程超时，请稍后重试"
 
-    async def _call_anthropic_with_tools_async(self, system_prompt: str, user_message: str, use_tools: bool = True) -> str:
+    async def _call_anthropic_with_tools_async(self, system_prompt: str, user_message: str, use_tools: bool = True,
+                                                progress_callback: callable = None) -> str:
         """
         异步版本的Anthropic API调用，支持工具调用循环
 
@@ -705,6 +759,7 @@ class ClaudeAIClient:
             system_prompt: 系统提示词
             user_message: 用户消息
             use_tools: 是否启用工具调用
+            progress_callback: 进度回调函数（同步函数，会在executor中调用）
 
         Returns:
             str: AI响应文本
@@ -713,7 +768,7 @@ class ClaudeAIClient:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None,
-            lambda: self._call_anthropic_with_tools(system_prompt, user_message, use_tools)
+            lambda: self._call_anthropic_with_tools(system_prompt, user_message, use_tools, progress_callback)
         )
 
     async def generate_stock_analysis(self, request: AIAnalysisRequest) -> AIAnalysisResponse:
@@ -904,36 +959,57 @@ class ClaudeAIClient:
 
         return response_content
     
-    async def chat_with_ai(self, user_message: str, stock_context: Dict[str, Any] = None, use_tools: bool = True) -> str:
+    async def chat_with_ai(self, user_message: str, stock_context: Dict[str, Any] = None, use_tools: bool = True,
+                           progress_callback: callable = None) -> str:
         """与AI进行对话交互，支持工具调用获取实时数据
 
         Args:
             user_message: 用户消息
             stock_context: 股票上下文信息
             use_tools: 是否启用工具调用（默认True）
+            progress_callback: 进度回调函数，签名为 callback(event_type: str, data: dict)
+                              event_type 可为: 'tool_start', 'tool_end', 'thinking', 'response'
 
         Returns:
             str: AI响应文本
         """
+        self.logger.info(f"[CHAT] ========== chat_with_ai 开始 ==========")
+        self.logger.info(f"[CHAT] 用户消息: {user_message[:100]}...")
+        self.logger.info(f"[CHAT] use_tools参数: {use_tools}")
+        self.logger.info(f"[CHAT] tool_use可用性: {self.is_tool_use_available()}")
+        self.logger.info(f"[CHAT] futu_market已设置: {self.tool_executor.futu_market is not None}")
+        self.logger.info(f"[CHAT] progress_callback: {'有' if progress_callback else '无'}")
+
         try:
             if not self.is_available():
+                self.logger.warning("[CHAT] AI服务不可用")
                 return "抱歉，AI服务当前不可用，请稍后重试。"
 
             # 根据配置选择后端
             active_backend = self._get_active_backend()
+            self.logger.info(f"[CHAT] 选择后端: {active_backend}")
+
             if active_backend == self.BACKEND_ANTHROPIC:
-                return await self._chat_with_anthropic(user_message, stock_context, use_tools)
+                self.logger.info("[CHAT] 使用 Anthropic SDK 进行对话")
+                return await self._chat_with_anthropic(user_message, stock_context, use_tools, progress_callback)
             elif active_backend == self.BACKEND_CLAUDE_CODE:
+                self.logger.info("[CHAT] 使用 claude-code-sdk 进行对话")
                 return await self._chat_with_claude_code(user_message, stock_context, use_tools)
             else:
+                self.logger.warning("[CHAT] 无可用后端")
                 return "抱歉，AI服务当前不可用，请稍后重试。"
 
         except Exception as e:
-            self.logger.error(f"AI对话失败: {e}")
+            self.logger.error(f"[CHAT] AI对话失败: {e}")
+            import traceback
+            self.logger.error(f"[CHAT] 错误堆栈: {traceback.format_exc()}")
             return f"对话过程中出现错误: {str(e)}"
 
-    async def _chat_with_anthropic(self, user_message: str, stock_context: Dict[str, Any] = None, use_tools: bool = True) -> str:
+    async def _chat_with_anthropic(self, user_message: str, stock_context: Dict[str, Any] = None, use_tools: bool = True,
+                                    progress_callback: callable = None) -> str:
         """使用Anthropic SDK进行对话（支持tool use）"""
+        self.logger.info(f"[TOOL-USE] ========== _chat_with_anthropic 开始 ==========")
+
         system_prompt = """你是一位专业的股票分析师AI助手，具有丰富的投资分析经验。请用中文与用户交流。
 
 你可以使用以下工具获取股票数据：
@@ -947,16 +1023,27 @@ class ClaudeAIClient:
 
         # 构建用户消息
         prompt = self._build_chat_prompt(user_message, stock_context)
+        self.logger.info(f"[TOOL-USE] 构建的prompt长度: {len(prompt)}")
+        self.logger.debug(f"[TOOL-USE] prompt内容: {prompt[:500]}...")
+
+        # 判断是否启用工具
+        actual_use_tools = use_tools and self.is_tool_use_available()
+        self.logger.info(f"[TOOL-USE] use_tools={use_tools}, is_tool_use_available={self.is_tool_use_available()}, 最终启用工具={actual_use_tools}")
 
         try:
+            self.logger.info(f"[TOOL-USE] 调用 _call_anthropic_with_tools_async...")
             response = await self._call_anthropic_with_tools_async(
                 system_prompt=system_prompt,
                 user_message=prompt,
-                use_tools=use_tools and self.is_tool_use_available()
+                use_tools=actual_use_tools,
+                progress_callback=progress_callback
             )
+            self.logger.info(f"[TOOL-USE] 收到响应，长度: {len(response) if response else 0}")
             return response if response else "抱歉，AI服务响应异常，请稍后重试。"
         except Exception as e:
-            self.logger.error(f"Anthropic对话异常: {e}")
+            self.logger.error(f"[TOOL-USE] Anthropic对话异常: {e}")
+            import traceback
+            self.logger.error(f"[TOOL-USE] 错误堆栈: {traceback.format_exc()}")
             return f"对话服务异常: {str(e)}"
 
     async def _chat_with_claude_code(self, user_message: str, stock_context: Dict[str, Any] = None, use_tools: bool = True) -> str:

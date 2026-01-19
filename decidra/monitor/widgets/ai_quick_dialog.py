@@ -6,13 +6,24 @@ AI快捷对话框组件
 用户可以点击预设问题或输入自定义问题
 """
 
-from typing import Optional
+from typing import Optional, NamedTuple
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import ModalScreen
 from textual.widgets import Static, Button, Input
 from textual.containers import Horizontal, Vertical, Grid, Center
+
+
+class AIDialogResult(NamedTuple):
+    """AI对话框返回结果
+
+    Attributes:
+        question: 用户问题文本
+        is_custom: 是否为自定义输入（True=自定义输入，False=预设问题）
+    """
+    question: str
+    is_custom: bool
 
 
 class AIQuickDialog(ModalScreen):
@@ -285,7 +296,7 @@ class AIQuickDialog(ModalScreen):
             self._input_widget.placeholder = "⚠️ 请输入问题或选择快捷问题..."
             return
 
-        self._submit_question(custom_question)
+        self._submit_question(custom_question, is_custom=True)
 
     def action_cancel(self) -> None:
         """取消操作"""
@@ -316,13 +327,14 @@ class AIQuickDialog(ModalScreen):
         """快捷问题6"""
         self._submit_question(self.quick_questions[5])
 
-    def _submit_question(self, question: str) -> None:
+    def _submit_question(self, question: str, is_custom: bool = False) -> None:
         """提交问题并关闭对话框
 
         Args:
             question: 要提交的问题
+            is_custom: 是否为自定义输入
         """
-        self.dismiss(question)
+        self.dismiss(AIDialogResult(question=question, is_custom=is_custom))
 
     def _generate_questions(self) -> None:
         """根据当前股票信息生成预设问题"""
@@ -330,8 +342,8 @@ class AIQuickDialog(ModalScreen):
         self.quick_questions = [
             f"分析{stock_display}投资价值",
             f"{stock_display}买卖建议",
-            "技术指标信号分析",
-            "短期买入建仓",
-            "同行业股票对比",
-            "主力资金流向"
+            f"{stock_display}技术指标信号分析",
+            f"{stock_display}买入建仓价格",
+            f"{stock_display}同行业股票对比",
+            f"{stock_display}主力资金流向"
         ]

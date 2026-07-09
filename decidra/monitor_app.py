@@ -71,6 +71,7 @@ class MonitorApp(App):
         Binding("k", "delete_stock", "删除股票"),
         Binding("t", "toggle_trading_mode", "切换交易模式"),
         Binding("o", "place_order", "新订单"),
+        Binding("b", "buy_selected", "买入"),
         Binding("r", "refresh", "刷新数据"),
         Binding("escape", "go_back", "返回"),
         Binding("tab", "switch_tab", "切换标签"),
@@ -275,6 +276,11 @@ class MonitorApp(App):
         """新订单动作"""
         if not self.show_splash and self.managers_initialized:
             await self.event_handler.action_place_order()
+
+    async def action_buy_selected(self) -> None:
+        """买入选中标的动作（b键 / 持仓表回车加仓）"""
+        if not self.show_splash and self.managers_initialized:
+            await self.event_handler.action_buy_selected()
 
     async def action_focus_left_table(self) -> None:
         """左移焦点到股票表格"""

@@ -388,41 +388,47 @@ class EventHandler:
                 self.logger.error("DataManager未初始化")
                 return
 
-            # 如果切换到真实交易模式，需要先解锁
+            # 如果切换到真实交易模式，尝试通过 API 解锁（命令行版 OpenD 支持 API 解锁；
+            # 图形界面版 OpenD 已禁用 API 解锁接口，需在其界面右上角手动点击「解锁交易」）。
+            # 解锁失败不再硬阻断切换：给出正确指引后继续，用户可能已在 OpenD 界面手动解锁。
             if new_mode == TRADING_MODE_REAL:
                 futu_trade = getattr(data_manager, 'futu_trade', None)
                 if futu_trade:
-                    # 检查是否配置了交易密码
                     if not futu_trade.password_md5:
-                        self.logger.error("未配置交易密码，无法解锁真实交易")
+                        self.logger.warning("未配置交易密码，跳过 API 自动解锁")
                         if ui_manager and ui_manager.info_panel:
                             await ui_manager.info_panel.log_info(
-                                "未配置交易密码，请在config.ini的[FutuOpenD.Credential]节中设置password_md5",
+                                "未配置交易密码：图形界面版 FutuOpenD 请在右上角手动点击「解锁交易」；"
+                                "命令行版请在 config.ini 的 [FutuOpenD.Credential] 设置 password_md5。已继续切换。",
                                 "交易模式"
                             )
-                        return
-
-                    self.logger.info("正在解锁真实交易功能...")
-                    if ui_manager and ui_manager.info_panel:
-                        await ui_manager.info_panel.log_info("正在解锁真实交易功能...", "交易模式")
-
-                    # 在线程池中执行解锁操作，显式传递密码和市场参数
-                    loop = asyncio.get_event_loop()
-                    unlock_success = await loop.run_in_executor(
-                        None,
-                        lambda: futu_trade.unlock_trading(
-                            password=futu_trade.password_md5,
-                            market=futu_trade.default_market
-                        )
-                    )
-
-                    if not unlock_success:
-                        self.logger.error("解锁真实交易失败")
-                        if ui_manager and ui_manager.info_panel:
-                            await ui_manager.info_panel.log_info("解锁真实交易失败，请检查交易密码是否正确", "交易模式")
-                        return
                     else:
-                        self.logger.info("真实交易解锁成功")
+                        self.logger.info("正在尝试解锁真实交易功能...")
+                        if ui_manager and ui_manager.info_panel:
+                            await ui_manager.info_panel.log_info("正在尝试解锁真实交易功能...", "交易模式")
+
+                        # 在线程池中执行解锁操作，显式传递密码和市场参数
+                        loop = asyncio.get_event_loop()
+                        unlock_success = await loop.run_in_executor(
+                            None,
+                            lambda: futu_trade.unlock_trading(
+                                password_md5=futu_trade.password_md5,
+                                market=futu_trade.default_market
+                            )
+                        )
+
+                        if unlock_success:
+                            self.logger.info("真实交易解锁成功")
+                            if ui_manager and ui_manager.info_panel:
+                                await ui_manager.info_panel.log_info("真实交易解锁成功", "交易模式")
+                        else:
+                            self.logger.warning("API 自动解锁未成功，已继续切换到真实交易模式")
+                            if ui_manager and ui_manager.info_panel:
+                                await ui_manager.info_panel.log_info(
+                                    "API 自动解锁未成功：图形界面版 FutuOpenD 请在右上角手动点击「解锁交易」；"
+                                    "若已手动解锁可忽略，密码有误请核对。已继续切换。",
+                                    "交易模式"
+                                )
                 else:
                     self.logger.warning("FutuTrade未初始化，跳过解锁步骤")
 

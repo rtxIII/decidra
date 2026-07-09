@@ -132,23 +132,25 @@ class UserGroupPanel(Container):
         border-title-background: $surface;
         padding: 1;
         layout: vertical;
+        overflow-y: auto;
     }
 
     UserGroupPanel .position-table-top {
         width: 1fr;
-        height: 40%;
-        padding: 1;
+        height: 1fr;
+        min-height: 8;
         margin-bottom: 1;
     }
 
     UserGroupPanel .position-table-top DataTable {
         height: 1fr;
+        min-height: 6;
     }
 
     UserGroupPanel .orders-table-bottom {
         width: 1fr;
-        height: 60%;
-        padding: 1;
+        height: 1fr;
+        min-height: 6;
     }
 
     UserGroupPanel .orders-table-bottom DataTable {
@@ -1163,7 +1165,12 @@ class MonitorLayout(Container):
             await self.app.action_help()
 
     async def action_enter_analysis(self) -> None:
-        """进入分析动作 - 委托给主应用处理"""
+        """进入分析动作 - 持仓表激活时改为买入(加仓)，否则委托主应用进入分析"""
+        app_core = getattr(self.app, 'app_core', None)
+        if app_core is not None and getattr(app_core, 'active_table', None) == "position":
+            if hasattr(self.app, 'action_buy_selected'):
+                await self.app.action_buy_selected()
+            return
         if hasattr(self.app, 'action_enter_analysis'):
             await self.app.action_enter_analysis()
 

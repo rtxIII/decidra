@@ -16,6 +16,32 @@ from ...utils.global_vars import get_logger
 from .data import TRADING_MODE_SIMULATION, TRADING_MODE_REAL
 
 
+# 大额订单二次确认阈值：预估金额或数量任一超过即触发确认（仅大额确认策略）
+LARGE_ORDER_CONFIRM_AMOUNT = 100000  # 预估金额阈值：10万
+LARGE_ORDER_CONFIRM_QTY = 10000      # 数量阈值：1万股
+# 买入默认数量在取不到每手股数时的回退值
+DEFAULT_BUY_LOT_FALLBACK = 100
+
+
+def needs_large_order_confirm(price, qty) -> bool:
+    """判断订单是否达到大额二次确认阈值
+
+    Args:
+        price: 订单价格
+        qty: 订单数量
+
+    Returns:
+        bool: 预估金额 >= 阈值 或 数量 >= 阈值 时返回 True
+    """
+    try:
+        price_value = float(price)
+        qty_value = float(qty)
+    except (TypeError, ValueError):
+        return False
+    amount = price_value * qty_value
+    return amount >= LARGE_ORDER_CONFIRM_AMOUNT or qty_value >= LARGE_ORDER_CONFIRM_QTY
+
+
 class EventHandler:
     """
     事件处理器
@@ -850,6 +876,102 @@ class EventHandler:
             if ui_manager and ui_manager.info_panel:
                 await ui_manager.info_panel.log_info(f"创建订单失败: {e}", "下单操作")
 
+    def _default_buy_qty(self, stock_code: str) -> int:
+        """买入默认数量：优先使用每手股数(lot_size)，取不到则回退到固定值"""
+        try:
+            info = self.app_core.stock_basicinfo_cache.get(stock_code)
+            if info:
+                lot_size = int(info.get('lot_size', 0) or 0)
+                if lot_size > 0:
+                    return lot_size
+        except (AttributeError, ValueError, TypeError) as e:
+            self.logger.debug(f"获取每手股数失败，使用回退值: {e}")
+        return DEFAULT_BUY_LOT_FALLBACK
+
+    async def action_buy_selected(self) -> None:
+        """买入选中标的 - 弹出预填买入对话框（持仓表加仓 / 自选表买入）"""
+        self.app.run_worker(self._buy_from_selection_worker, exclusive=True)
+
+    async def _buy_from_selection_worker(self) -> None:
+        """买入选中标的的工作线程"""
+        try:
+            stock_code = ""
+            stock_name = ""
+            price = None
+
+            if self.app_core.active_table == "position":
+                # 持仓表：加仓当前选中持仓
+                if not self.app_core.position_data or len(self.app_core.position_data) == 0:
+                    ui_manager = getattr(self.app_core.app, 'ui_manager', None)
+                    if ui_manager and ui_manager.info_panel:
+                        await ui_manager.info_panel.log_info("没有持仓数据，无法买入", "买入操作")
+                    return
+                if not (0 <= self.app_core.current_position_cursor < len(self.app_core.position_data)):
+                    ui_manager = getattr(self.app_core.app, 'ui_manager', None)
+                    if ui_manager and ui_manager.info_panel:
+                        await ui_manager.info_panel.log_info("请选择要加仓的持仓", "买入操作")
+                    return
+                selected_position = self.app_core.position_data[self.app_core.current_position_cursor]
+                stock_code = selected_position.get('stock_code', '')
+                stock_name = selected_position.get('stock_name', '')
+                price = selected_position.get('nominal_price', 0)
+            else:
+                # 自选股表：买入当前选中股票
+                if not (0 <= self.app_core.current_stock_cursor < len(self.app_core.monitored_stocks)):
+                    ui_manager = getattr(self.app_core.app, 'ui_manager', None)
+                    if ui_manager and ui_manager.info_panel:
+                        await ui_manager.info_panel.log_info("请选择要买入的股票", "买入操作")
+                    return
+                stock_code = self.app_core.monitored_stocks[self.app_core.current_stock_cursor]
+                stock_info = self.app_core.stock_data.get(stock_code)
+                if stock_info is not None and hasattr(stock_info, 'current_price'):
+                    price = stock_info.current_price
+
+            if not stock_code:
+                ui_manager = getattr(self.app_core.app, 'ui_manager', None)
+                if ui_manager and ui_manager.info_panel:
+                    await ui_manager.info_panel.log_info("未能确定买入标的", "买入操作")
+                return
+
+            # 构建默认值：方向买入、价格取现价、数量取每手股数
+            default_values = {
+                "code": stock_code,
+                "trd_side": "BUY",
+                "qty": self._default_buy_qty(stock_code),
+            }
+            if price:
+                default_values["price"] = price
+
+            title = f"买入 - {stock_code}"
+            if stock_name:
+                title += f" ({stock_name})"
+
+            self.logger.info(f"准备买入: {stock_code} ({stock_name}), 现价: {price}, 默认数量: {default_values['qty']}")
+
+            from ..widgets.order_dialog import show_place_order_dialog
+
+            order_data = await show_place_order_dialog(
+                app=self.app,
+                title=title,
+                default_values=default_values,
+                submit_callback=self._handle_place_submit,
+                cancel_callback=self._handle_place_cancel
+            )
+
+            if order_data:
+                self.logger.info(f"买入订单数据已收集: {order_data}")
+                await self._submit_place_order(order_data)
+            else:
+                self.logger.info("用户取消了买入操作")
+
+        except Exception as e:
+            self.logger.error(f"买入失败: {e}")
+            import traceback
+            self.logger.error(f"详细错误: {traceback.format_exc()}")
+            ui_manager = getattr(self.app_core.app, 'ui_manager', None)
+            if ui_manager and ui_manager.info_panel:
+                await ui_manager.info_panel.log_info(f"买入失败: {e}", "买入操作")
+
     def _handle_place_submit(self, order_data) -> None:
         """下单提交回调函数"""
         self.logger.info(f"下单提交回调: {order_data}")
@@ -867,6 +989,28 @@ class EventHandler:
             if not isinstance(order_data, OrderData):
                 self.logger.error(f"下单数据格式错误: {type(order_data)}")
                 return
+
+            # 仅大额订单二次确认（覆盖 o/买/卖 全部下单路径）
+            if needs_large_order_confirm(order_data.price, order_data.qty):
+                amount = float(order_data.price) * float(order_data.qty)
+                side_text = "买入" if str(order_data.trd_side).upper() == "BUY" else "卖出"
+                confirmed = await show_confirm_dialog(
+                    self.app,
+                    message=(
+                        f"大额订单，请确认：\n"
+                        f"{order_data.code} {side_text} {order_data.qty}股 @ {order_data.price}\n"
+                        f"预估金额 ¥{amount:,.2f}"
+                    ),
+                    title="大额下单确认",
+                    confirm_text="确认下单",
+                    cancel_text="取消"
+                )
+                if not confirmed:
+                    self.logger.info("用户取消了大额订单")
+                    ui_manager = getattr(self.app_core.app, 'ui_manager', None)
+                    if ui_manager and ui_manager.info_panel:
+                        await ui_manager.info_panel.log_info("已取消大额订单", "下单操作")
+                    return
 
             # 获取futu_trade实例
             data_manager = getattr(self.app_core.app, 'data_manager', None)

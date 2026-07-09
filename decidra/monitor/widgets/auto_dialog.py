@@ -13,8 +13,30 @@ from textual.widgets import Static, Button, Input
 from textual.containers import Horizontal, Vertical, Center
 from textual.validation import Validator
 
+from textual.css.query import NoMatches
 from textual_autocomplete import AutoComplete
 from textual_autocomplete._autocomplete import DropdownItem, TargetState
+
+
+class SafeAutoComplete(AutoComplete):
+    """带拆卸守卫的 AutoComplete。
+
+    上游 textual_autocomplete 4.0.4 在 on_mount 中注册了 0.2s 定时器周期性调用
+    ``_align_to_target``，该方法通过 ``self.option_list`` (``query_one(AutoCompleteList)``)
+    访问下拉列表却未捕获 ``NoMatches``。当承载它的模态对话框 ``dismiss`` 拆卸、
+    ``AutoCompleteList`` 子节点已被移除而定时器仍触发时，会抛出未捕获的 ``NoMatches``，
+    直接使整个 TUI 崩溃退出（"NoMatches: No nodes match AutoCompleteList on AutoComplete()"）。
+
+    库自身在 ``_listen_to_messages`` 中已用 ``try/except NoMatches`` 处理同类拆卸场景，
+    这里对 ``_align_to_target`` 采用一致的守卫，仅吞掉拆卸期的 ``NoMatches``。
+    """
+
+    def _align_to_target(self) -> None:
+        try:
+            super()._align_to_target()
+        except NoMatches:
+            # 对话框拆卸期，AutoCompleteList 已被移除而定时器仍触发；忽略即可
+            return
 
 
 class WindowInputDialog(ModalScreen):
@@ -188,8 +210,8 @@ class WindowInputDialog(ModalScreen):
                         id="input-field"
                     )
                     yield self._input_widget
-                    # 用 AutoComplete 包装 Input
-                    self._autocomplete_widget = AutoComplete(
+                    # 用 AutoComplete 包装 Input（使用带拆卸守卫的子类，避免定时器竞态崩溃）
+                    self._autocomplete_widget = SafeAutoComplete(
                         self._input_widget,
                         candidates=self.candidates_callback,
                         prevent_default_enter=False,

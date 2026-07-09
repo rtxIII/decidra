@@ -14,11 +14,37 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Static, Button, Input, Select
+from textual.widgets import Static, Button, Input, Select, Collapsible
 from textual.containers import Horizontal, Vertical, Center
 from textual.validation import Validator, ValidationResult, Failure
 
 from ...utils.global_vars import get_logger
+
+
+# 代码前缀 -> 富途交易市场码（HK/US/CN），A股统一为 CN
+_MARKET_PREFIX_MAP = {
+    "HK": "HK",
+    "US": "US",
+    "SH": "CN",
+    "SZ": "CN",
+    "CN": "CN",
+}
+_DEFAULT_MARKET = "HK"
+
+
+def infer_market_from_code(code: str) -> str:
+    """根据股票代码前缀推断交易市场码
+
+    Args:
+        code: 股票代码，如 "HK.00700"、"US.AAPL"、"SH.600000"、"SZ.000001"
+
+    Returns:
+        市场码：HK / US / CN；无法识别时回退为 HK
+    """
+    if not code or "." not in code:
+        return _DEFAULT_MARKET
+    prefix = code.split(".", 1)[0].strip().upper()
+    return _MARKET_PREFIX_MAP.get(prefix, _DEFAULT_MARKET)
 
 
 # 自定义验证器
@@ -327,7 +353,6 @@ class PlaceOrderDialog(ModalScreen):
         self._order_type_select: Optional[Select] = None
         self._trd_side_select: Optional[Select] = None
         self._trd_env_select: Optional[Select] = None
-        self._market_select: Optional[Select] = None
         self._time_in_force_select: Optional[Select] = None
         self._error_widget: Optional[Static] = None
         self._amount_display: Optional[Static] = None
@@ -386,10 +411,8 @@ class PlaceOrderDialog(ModalScreen):
                         )
                         yield self._qty_input
 
-                # 高级选项区域
-                with Vertical(classes="order-section") as advanced_section:
-                    advanced_section.border_title = "高级选项"
-
+                # 高级选项区域（默认折叠，市场由代码前缀自动推断，不再手选）
+                with Collapsible(title="高级选项", collapsed=True, classes="order-advanced"):
                     with Horizontal(classes="order-field-row"):
                         yield Static("订单类型:", classes="order-field-label")
                         self._order_type_select = Select(
@@ -408,14 +431,6 @@ class PlaceOrderDialog(ModalScreen):
                         yield self._trd_env_select
 
                     with Horizontal(classes="order-field-row"):
-                        yield Static("市场:", classes="order-field-label")
-                        self._market_select = Select(
-                            options=[(name, code) for code, name in MARKETS],
-                            classes="order-field-select",
-                            id="market-select"
-                        )
-                        yield self._market_select
-
                         yield Static("有效期:", classes="order-field-label")
                         self._time_in_force_select = Select(
                             options=[(name, code) for code, name in TIME_IN_FORCE],
@@ -424,7 +439,6 @@ class PlaceOrderDialog(ModalScreen):
                         )
                         yield self._time_in_force_select
 
-                    with Horizontal(classes="order-field-row"):
                         yield Static("辅助价格:", classes="order-field-label")
                         self._aux_price_input = Input(
                             value=str(self.default_values.get("aux_price", "")),
@@ -435,6 +449,7 @@ class PlaceOrderDialog(ModalScreen):
                         )
                         yield self._aux_price_input
 
+                    with Horizontal(classes="order-field-row"):
                         yield Static("备注:", classes="order-field-label")
                         self._remark_input = Input(
                             value=self.default_values.get("remark", ""),
@@ -484,10 +499,6 @@ class PlaceOrderDialog(ModalScreen):
         if self._trd_env_select:
             default_trd_env = self.default_values.get("trd_env", "SIMULATE")
             self._trd_env_select.value = default_trd_env
-
-        if self._market_select:
-            default_market = self.default_values.get("market", "HK")
-            self._market_select.value = default_market
 
         if self._time_in_force_select:
             default_time_in_force = self.default_values.get("time_in_force", "DAY")
@@ -598,13 +609,16 @@ class PlaceOrderDialog(ModalScreen):
         order_type = self._order_type_select.value if self._order_type_select.value is not None else "NORMAL"
         trd_side = self._trd_side_select.value if self._trd_side_select.value is not None else "BUY"
         trd_env = self._trd_env_select.value if self._trd_env_select.value is not None else "SIMULATE"
-        market = self._market_select.value if self._market_select.value is not None else "HK"
         time_in_force = self._time_in_force_select.value if self._time_in_force_select.value is not None else "DAY"
 
-        self.logger.info(f"Select组件值 - order_type: {order_type}, trd_side: {trd_side}, trd_env: {trd_env}, market: {market}, time_in_force: {time_in_force}")
+        # 市场由代码前缀自动推断，避免用户手选出错
+        code = self._code_input.value.strip().upper()
+        market = infer_market_from_code(code)
+
+        self.logger.info(f"Select组件值 - order_type: {order_type}, trd_side: {trd_side}, trd_env: {trd_env}, market: {market}(推断), time_in_force: {time_in_force}")
 
         return OrderData(
-            code=self._code_input.value.strip().upper(),
+            code=code,
             price=price,
             qty=qty,
             order_type=order_type,

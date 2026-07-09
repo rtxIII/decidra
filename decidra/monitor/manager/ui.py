@@ -602,7 +602,7 @@ class UIManager:
             self.logger.debug("持仓表格已清空(保留列定义)")
 
             # 从 app_core.position_data 读取并更新表格
-            for position in self.app_core.position_data:
+            for index, position in enumerate(self.app_core.position_data):
                 try:
                     # 打印完整的持仓数据以便调试
                     self.logger.debug(f"持仓原始数据: {position}")
@@ -633,6 +633,9 @@ class UIManager:
                     # 添加到表格
                     self.logger.debug(f"添加持仓行: {stock_code} {stock_name} {qty} {cost_price}")
 
+                    # 行键必须唯一：股票代码可能为空或重复(如同代码多空双向)，
+                    # 直接用 stock_code 作键会触发 DuplicateKey 导致除首行外全部被吞，
+                    # 表现为持仓表只显示一行。这里加 index 保证唯一。
                     self.position_table.add_row(
                         stock_code,
                         stock_name,
@@ -642,7 +645,7 @@ class UIManager:
                         nominal_price,
                         pl_val_display,
                         pl_ratio_display,
-                        key=stock_code
+                        key=f"{stock_code}_{index}"
                     )
 
                     self.logger.debug(f"持仓行添加成功: {stock_code}")

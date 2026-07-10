@@ -4,6 +4,7 @@
 为监控主界面下半部分的终端控制台提供 agent 交互能力（skill / memory / workflow）。
 """
 
+from .auth_migrate import MigrationResult, migrate_ai_config
 from .console_panel import TerminalConsolePanel
 from .event_renderer import TranscriptRenderer
 from .permission_dialogs import (
@@ -19,6 +20,8 @@ __all__ = [
     "TerminalRuntime",
     "AuthStatus",
     "check_auth",
+    "migrate_ai_config",
+    "MigrationResult",
     "PermissionDialog",
     "AskUserDialog",
     "make_permission_callbacks",

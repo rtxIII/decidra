@@ -91,6 +91,7 @@ class TerminalConsolePanel(Widget):
         self._renderer = TranscriptRenderer(self._write_line)
         self._active_worker = None
         self._busy = False
+        self._trade_manager: object = None
 
     def compose(self) -> ComposeResult:
         """组合 transcript 与输入框。"""
@@ -214,4 +215,68 @@ class TerminalConsolePanel(Widget):
         """ESC：取消进行中的回合。"""
         if self._active_worker is not None and self._busy:
             self._active_worker.cancel()
+
+    # —— InfoSink 兼容 shim ——
+    # 原 InfoPanel 被 6 处调用点以 log_info 等记录日志。终端面板实现相同接口，
+    # 把日志转发到 transcript，使这些调用点无需改动即可工作。
+
+    _LEVEL_STYLE = {
+        "info": "dim",
+        "warning": "yellow",
+        "error": "red",
+        "debug": "dim",
+    }
+
+    def _log(self, content: str, level: str, source: str) -> None:
+        """把一条日志按级别样式写入 transcript。"""
+        style = self._LEVEL_STYLE.get(level, "dim")
+        prefix = f"[{source}] " if source else ""
+        self.write_transcript(f"[{style}]· {prefix}{content}[/{style}]")
+
+    async def log_info(self, content: str, source: str = "") -> None:
+        """记录信息日志（转发到 transcript）。"""
+        self._log(content, "info", source)
+
+    async def log_warning(self, content: str, source: str = "") -> None:
+        """记录警告日志（转发到 transcript）。"""
+        self._log(content, "warning", source)
+
+    async def log_error(self, content: str, source: str = "") -> None:
+        """记录错误日志（转发到 transcript）。"""
+        self._log(content, "error", source)
+
+    async def log_debug(self, content: str, source: str = "") -> None:
+        """记录调试日志（转发到 transcript）。"""
+        self._log(content, "debug", source)
+
+    async def add_info(
+        self,
+        content: str,
+        info_type: object = None,
+        level: object = None,
+        source: str = "",
+        data: dict | None = None,
+    ) -> None:
+        """记录一条带类型/级别的信息（转发到 transcript）。
+
+        兼容原 InfoPanel 签名；``info_type``/``level``/``data`` 在终端场景下仅用于
+        推断样式，不做结构化存储。
+        """
+        level_name = getattr(level, "value", None) or (str(level).lower() if level else "info")
+        style = self._LEVEL_STYLE.get(level_name, "dim")
+        prefix = f"[{source}] " if source else ""
+        self.write_transcript(f"[{style}]· {prefix}{content}[/{style}]")
+
+    def set_trade_manager(self, trade_manager: object) -> None:
+        """设置交易管理器引用（供 agent 交易工具后续使用）。"""
+        self._trade_manager = trade_manager
+
+    async def clear_all(self) -> None:
+        """清空 transcript（兼容 InfoPanel.clear_all）。"""
+        self.clear_transcript()
+
+    async def select_last_message(self) -> bool:
+        """兼容 InfoPanel.select_last_message；终端场景为空操作。"""
+        return False
+
 

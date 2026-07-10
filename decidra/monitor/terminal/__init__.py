@@ -7,6 +7,7 @@
 from .auth_migrate import MigrationResult, migrate_ai_config
 from .console_panel import TerminalConsolePanel
 from .event_renderer import TranscriptRenderer
+from .info_sink import InfoSink
 from .permission_dialogs import (
     AskUserDialog,
     PermissionDialog,
@@ -22,6 +23,7 @@ __all__ = [
     "check_auth",
     "migrate_ai_config",
     "MigrationResult",
+    "InfoSink",
     "PermissionDialog",
     "AskUserDialog",
     "make_permission_callbacks",

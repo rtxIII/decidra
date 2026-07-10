@@ -324,8 +324,8 @@ class LifecycleManager:
         try:
             cleanup_tasks = []
 
-            # 关闭智能终端运行时
-            await self.stop_terminal_runtime()
+            # 关闭智能终端运行时（纳入超时保护，避免 close 挂起阻塞退出）
+            cleanup_tasks.append(self.stop_terminal_runtime())
 
             # 断开富途连接
             data_manager = getattr(self.app_core.app, 'data_manager', None)

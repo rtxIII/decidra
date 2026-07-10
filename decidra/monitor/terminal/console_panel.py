@@ -10,12 +10,14 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from rich.markup import escape
 from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.widget import Widget
 from textual.widgets import Input, RichLog
+from textual.worker import get_current_worker
 
 from ...utils.global_vars import get_logger
 from .event_renderer import TranscriptRenderer
@@ -164,11 +166,13 @@ class TerminalConsolePanel(Widget):
         if self._busy:
             self.write_transcript("[dim]· 上一轮仍在进行，请稍候或按 ESC 取消[/dim]")
             return
-        # 回显用户输入
-        self.write_transcript(f"[bold]›[/bold] {line}")
+        # 回显用户输入（转义 markup，防注入破坏渲染）
+        self.write_transcript(f"[bold]›[/bold] {escape(line)}")
         if self._runtime is None:
             self.write_transcript("[dim]· 未接入运行时（仅回显）[/dim]")
             return
+        # 在启动 worker 之前同步置忙，关闭 handler 与 worker 之间的竞态窗口。
+        self._busy = True
         self._active_worker = self.run_worker(
             self._drive(line),
             group="terminal_turn",
@@ -185,7 +189,6 @@ class TerminalConsolePanel(Widget):
         Args:
             line: 用户输入行。
         """
-        self._busy = True
         try:
             await self._runtime.submit(
                 line,
@@ -198,18 +201,25 @@ class TerminalConsolePanel(Widget):
             raise
         except Exception as exc:  # 防御：任何未预期异常不应崩溃 UI
             self._renderer.flush()
-            self.write_transcript(f"[bold red]✗ 运行时错误: {exc}[/bold red]")
+            self.write_transcript(f"[bold red]✗ 运行时错误: {escape(str(exc))}[/bold red]")
             self.logger.error("驱动 agent 回合失败: %s", exc)
         else:
             self._renderer.flush()
         finally:
-            self._busy = False
-            self._active_worker = None
-            self.focus_input()
+            # 仅当自己仍是当前 worker 时才清状态，避免被 exclusive 取消的旧 worker
+            # 的 finally 清掉后继 worker 的引用（否则 ESC 取消会失效）。
+            try:
+                current = get_current_worker()
+            except Exception:
+                current = None
+            if current is None or current is self._active_worker:
+                self._busy = False
+                self._active_worker = None
+                self.focus_input()
 
     async def _print_system(self, message: str) -> None:
-        """系统消息回调：以 dim 样式写入 transcript。"""
-        self.write_transcript(f"[dim]· {message}[/dim]")
+        """系统消息回调：以 dim 样式写入 transcript（转义 markup）。"""
+        self.write_transcript(f"[dim]· {escape(message)}[/dim]")
 
     def action_cancel_turn(self) -> None:
         """ESC：取消进行中的回合。"""
@@ -228,10 +238,10 @@ class TerminalConsolePanel(Widget):
     }
 
     def _log(self, content: str, level: str, source: str) -> None:
-        """把一条日志按级别样式写入 transcript。"""
+        """把一条日志按级别样式写入 transcript（转义 markup 防注入）。"""
         style = self._LEVEL_STYLE.get(level, "dim")
-        prefix = f"[{source}] " if source else ""
-        self.write_transcript(f"[{style}]· {prefix}{content}[/{style}]")
+        prefix = f"[{escape(source)}] " if source else ""
+        self.write_transcript(f"[{style}]· {prefix}{escape(content)}[/{style}]")
 
     async def log_info(self, content: str, source: str = "") -> None:
         """记录信息日志（转发到 transcript）。"""
@@ -264,8 +274,8 @@ class TerminalConsolePanel(Widget):
         """
         level_name = getattr(level, "value", None) or (str(level).lower() if level else "info")
         style = self._LEVEL_STYLE.get(level_name, "dim")
-        prefix = f"[{source}] " if source else ""
-        self.write_transcript(f"[{style}]· {prefix}{content}[/{style}]")
+        prefix = f"[{escape(source)}] " if source else ""
+        self.write_transcript(f"[{style}]· {prefix}{escape(content)}[/{style}]")
 
     def set_trade_manager(self, trade_manager: object) -> None:
         """设置交易管理器引用（供 agent 交易工具后续使用）。"""

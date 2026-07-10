@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 from typing import Callable
 
+from rich.markup import escape
+
 WriteCallback = Callable[[str], None]
 
 # 各类事件的渲染样式（markup 前缀）。
@@ -101,11 +103,11 @@ class TranscriptRenderer:
             self._render_tool_completed(event)
         elif name == "ErrorEvent":
             message = getattr(event, "message", "")
-            self._write(f"[{_STYLE_ERROR}]✗ 错误: {message}[/{_STYLE_ERROR}]")
+            self._write(f"[{_STYLE_ERROR}]✗ 错误: {escape(str(message))}[/{_STYLE_ERROR}]")
         elif name == "StatusEvent":
             message = getattr(event, "message", "")
             if message:
-                self._write(f"[{_STYLE_STATUS}]· {message}[/{_STYLE_STATUS}]")
+                self._write(f"[{_STYLE_STATUS}]· {escape(str(message))}[/{_STYLE_STATUS}]")
         elif name == "CompactProgressEvent":
             self._render_compact(event)
         # 未知事件类型静默忽略（对上游新增事件向前兼容）。
@@ -117,7 +119,8 @@ class TranscriptRenderer:
         text = "".join(self._assistant_buf).strip()
         self._assistant_buf.clear()
         if text:
-            self._write(text)
+            # 转义 markup：agent 文本常含 [ ] 等字符，直接进 RichLog(markup=True) 会崩。
+            self._write(escape(text))
 
     def _render_turn_complete(self, event: object) -> None:
         """渲染回合完成（可选 token 用量）。"""
@@ -136,8 +139,8 @@ class TranscriptRenderer:
 
     def _render_tool_started(self, event: object) -> None:
         """渲染工具开始执行。"""
-        tool_name = getattr(event, "tool_name", "?")
-        summary = _summarize_input(getattr(event, "tool_input", None), self.tool_input_limit)
+        tool_name = escape(str(getattr(event, "tool_name", "?")))
+        summary = escape(_summarize_input(getattr(event, "tool_input", None), self.tool_input_limit))
         line = f"[{_STYLE_TOOL_START}]⚙ 调用 {tool_name}[/{_STYLE_TOOL_START}]"
         if summary:
             line += f" [{_STYLE_STATUS}]{summary}[/{_STYLE_STATUS}]"
@@ -145,9 +148,9 @@ class TranscriptRenderer:
 
     def _render_tool_completed(self, event: object) -> None:
         """渲染工具执行完成（区分成功/失败）。"""
-        tool_name = getattr(event, "tool_name", "?")
+        tool_name = escape(str(getattr(event, "tool_name", "?")))
         is_error = bool(getattr(event, "is_error", False))
-        output = _truncate(str(getattr(event, "output", "") or ""), self.tool_output_limit)
+        output = escape(_truncate(str(getattr(event, "output", "") or ""), self.tool_output_limit))
         if is_error:
             line = f"[{_STYLE_TOOL_ERR}]✗ {tool_name} 失败[/{_STYLE_TOOL_ERR}]"
         else:
@@ -162,4 +165,4 @@ class TranscriptRenderer:
         phase = getattr(event, "phase", "")
         text = message or phase
         if text:
-            self._write(f"[{_STYLE_COMPACT}]⟳ 压缩: {text}[/{_STYLE_COMPACT}]")
+            self._write(f"[{_STYLE_COMPACT}]⟳ 压缩: {escape(str(text))}[/{_STYLE_COMPACT}]")

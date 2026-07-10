@@ -73,7 +73,10 @@ class LifecycleManager:
         # 初始化info
         if ui_manager:
             await ui_manager.initialize_info()
-        
+
+        # 启动智能终端运行时（后台构建，不阻塞挂载）
+        self.start_terminal_runtime()
+
         # 初始化AnalysisPanel InfoPanel
         await self.initialize_analysis_info_panel()
         
@@ -320,7 +323,10 @@ class LifecycleManager:
         """清理资源"""
         try:
             cleanup_tasks = []
-            
+
+            # 关闭智能终端运行时
+            await self.stop_terminal_runtime()
+
             # 断开富途连接
             data_manager = getattr(self.app_core.app, 'data_manager', None)
             if data_manager and data_manager.futu_market:
@@ -352,7 +358,98 @@ class LifecycleManager:
         except Exception as e:
             self.logger.error(f"资源清理失败: {e}")
             # 继续退出过程，不让异常阻止程序退出
-    
+
+    def start_terminal_runtime(self) -> None:
+        """启动智能终端运行时（后台构建，不阻塞挂载）。
+
+        ``build_runtime`` 内含网络与 MCP 连接等耗时初始化，故经 Textual 后台
+        worker 构建；构建期间面板显示占位提示，就绪后注入面板。
+        """
+        app = self.app_core.app
+        panel = self._get_terminal_panel()
+        if panel is None:
+            self.logger.warning("未找到终端面板，跳过运行时启动")
+            return
+        try:
+            panel.write_transcript("[dim]· 正在初始化智能终端…[/dim]")
+        except Exception:
+            pass
+        app.run_worker(
+            self._build_terminal_runtime(panel),
+            group="terminal_bootstrap",
+            exclusive=True,
+            description="terminal runtime bootstrap",
+        )
+
+    async def _build_terminal_runtime(self, panel) -> None:
+        """在后台构建终端运行时并注入面板。
+
+        Args:
+            panel: 终端控制台面板（TerminalConsolePanel）。
+        """
+        try:
+            from ..terminal.runtime_bridge import TerminalRuntime
+            from ..terminal.permission_dialogs import make_permission_callbacks
+            from ..terminal.auth_migrate import migrate_ai_config
+
+            app = self.app_core.app
+
+            # 迁移 Decidra AI 配置到 openharness settings（幂等）
+            try:
+                migrate_ai_config()
+            except Exception as exc:
+                self.logger.warning(f"AI 配置迁移跳过: {exc}")
+
+            # 权限与追问回调（Textual 对话框式）
+            permission_prompt, ask_user_prompt = make_permission_callbacks(app)
+
+            runtime = TerminalRuntime(
+                cwd=os.getcwd(),
+                permission_prompt=permission_prompt,
+                ask_user_prompt=ask_user_prompt,
+            )
+            await runtime.start()
+
+            app.terminal_runtime = runtime
+            if runtime.is_ready:
+                panel.set_runtime(runtime)
+                panel.write_transcript(
+                    f"[dim]· 智能终端就绪（模型 {runtime.active_model}）。输入消息开始对话。[/dim]"
+                )
+                self.logger.info("终端运行时已就绪: %s", runtime.session_id)
+            else:
+                detail = runtime.auth_status.detail if runtime.auth_status else "未知原因"
+                panel.write_transcript(f"[yellow]· 智能终端未连接：{detail}[/yellow]")
+                self.logger.warning("终端运行时未连接: %s", detail)
+        except Exception as exc:
+            self.logger.error(f"构建终端运行时失败: {exc}")
+            try:
+                panel.write_transcript(f"[red]· 智能终端初始化失败：{exc}[/red]")
+            except Exception:
+                pass
+
+    async def stop_terminal_runtime(self) -> None:
+        """关闭智能终端运行时（退出时调用，幂等）。"""
+        runtime = getattr(self.app_core.app, 'terminal_runtime', None)
+        if runtime is None:
+            return
+        try:
+            await runtime.close()
+            self.logger.info("终端运行时已关闭")
+        except Exception as exc:
+            self.logger.error(f"关闭终端运行时失败: {exc}")
+        finally:
+            self.app_core.app.terminal_runtime = None
+
+    def _get_terminal_panel(self):
+        """获取主界面的终端控制台面板（未找到返回 None）。"""
+        try:
+            from ..terminal.console_panel import TerminalConsolePanel
+            return self.app_core.app.query_one("#info_panel", TerminalConsolePanel)
+        except Exception as exc:
+            self.logger.debug(f"获取终端面板失败: {exc}")
+            return None
+
     async def initialize_analysis_info_panel(self) -> None:
         """初始化AnalysisPanel中的InfoPanel"""
         try:

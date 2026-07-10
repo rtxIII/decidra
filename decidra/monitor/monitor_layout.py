@@ -1144,11 +1144,49 @@ class MonitorLayout(Container):
     }
     """
     
+    # 终端 Input 持焦时应抑制的全局单键动作（避免打字触发退出/添加股票等）。
+    _TERMINAL_GATED_ACTIONS = frozenset({
+        "quit",
+        "refresh",
+        "help",
+        "add_stock",
+        "delete_stock",
+        "toggle_trading_mode",
+        "enter_analysis",
+        "switch_tab",
+        "open_ai_dialog",
+    })
+
+    def _is_terminal_input_focused(self) -> bool:
+        """判断当前焦点是否在终端控制台的输入框。"""
+        try:
+            focused = self.app.focused
+            return focused is not None and getattr(focused, "id", None) == "terminal_input"
+        except Exception:
+            return False
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        """动态门控：终端输入框持焦时禁用受控单键动作。
+
+        终端输入框获得焦点时，用户在打字（含 q/n/i 等单键），此时对全局单键动作
+        返回 False 以禁用，使按键流入输入框；失焦时返回 None 恢复正常。ctrl+c
+        等强制退出不在门控集内，始终可用。
+
+        Args:
+            action: 动作名。
+            parameters: 动作参数。
+
+        Returns:
+            ``False`` 禁用该动作；``None`` 表示不干预（正常启用）。
+        """
+        if action in self._TERMINAL_GATED_ACTIONS and self._is_terminal_input_focused():
+            return False
+        return None
+
     async def action_delete_stock(self) -> None:
         """删除股票动作 - 委托给主应用处理"""
         if hasattr(self.app, 'action_delete_stock'):
             await self.app.action_delete_stock()
-
     async def action_add_stock(self) -> None:
         """添加股票动作 - 委托给主应用处理"""
         if hasattr(self.app, 'action_add_stock'):

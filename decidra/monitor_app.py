@@ -379,18 +379,18 @@ class MonitorApp(App):
                 self.logger.error(f"关闭当前标签页失败: {e}")
     
     async def action_open_ai_dialog(self) -> None:
-        """打开AI快捷问答对话框"""
+        """AI 问答入口（i 键）：聚焦智能终端输入框。
+
+        下半区终端本身即为 agent 交互入口，i 键直接把焦点移到终端输入框，
+        而非弹独立对话框。
+        """
         if not self.show_splash and self.managers_initialized:
-            # 使用 run_worker 调用info_panel的AI对话框方法，避免 push_screen_wait 错误
             ui_manager = getattr(self, 'ui_manager', None)
-            if ui_manager and ui_manager.info_panel:
-                ui_manager.info_panel.run_worker(
-                    ui_manager.info_panel._show_ai_dialog(),
-                    exclusive=True,
-                    group="ai_dialog"
-                )
+            panel = ui_manager.info_panel if ui_manager else None
+            if panel is not None and hasattr(panel, 'focus_input'):
+                panel.focus_input()
             else:
-                self.logger.error("UIManager或InfoPanel未初始化，无法打开AI对话框")
+                self.logger.error("终端面板未初始化，无法聚焦")
 
     async def action_toggle_trading_mode(self) -> None:
         """切换交易模式动作"""

@@ -122,18 +122,18 @@ class UIManager:
             self.logger.debug(f"AI分析面板不在当前标签页中: {e}")
             self.ai_analysis_panel = None
         
-        # 获取InfoPanel引用
+        # 获取终端控制台面板引用（替换原 InfoPanel，满足 InfoSink 契约）
         try:
-            from ..widgets.line_panel import InfoPanel
-            self.info_panel = self.app.query_one("#info_panel", InfoPanel)
-            self.logger.info("InfoPanel引用设置成功")
+            from ..terminal.console_panel import TerminalConsolePanel
+            self.info_panel = self.app.query_one("#info_panel", TerminalConsolePanel)
+            self.logger.info("终端控制台面板引用设置成功")
 
             # 设置交易管理器
             if hasattr(self.app, 'futu_trade'):
                 self.info_panel.set_trade_manager(self.app.futu_trade)
-                self.logger.info("InfoPanel交易管理器设置成功")
+                self.logger.info("终端控制台交易管理器设置成功")
         except Exception as e:
-            self.logger.error(f"获取InfoPanel引用失败: {e}")
+            self.logger.error(f"获取终端控制台面板引用失败: {e}")
         
         # 获取状态栏组件引用
         try:

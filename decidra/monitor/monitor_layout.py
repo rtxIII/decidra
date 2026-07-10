@@ -976,9 +976,9 @@ class MainLayoutTab(Container):
         """组合主界面布局"""
         yield StockListPanel(id="stock_list_panel")
         yield UserGroupPanel(id="user_group_panel")
-        # 导入InfoPanel并添加到布局中
-        from .widgets.line_panel import InfoPanel
-        yield InfoPanel(title="系统信息", id="info_panel")
+        # 下半区为智能终端控制台，替换原 InfoPanel（id 保持 info_panel 以复用布局与引用）
+        from .terminal.console_panel import TerminalConsolePanel
+        yield TerminalConsolePanel(title="🖥 智能终端", id="info_panel")
 
 
 class AnalysisLayoutTab(Container):

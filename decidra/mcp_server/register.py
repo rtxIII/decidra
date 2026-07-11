@@ -57,6 +57,7 @@ def _desired_servers() -> dict[str, dict]:
     return {
         "futu": _stdio_config(["decidra.mcp_server"]),
         "yfinance": _stdio_config(["decidra.mcp_server.yfinance_mcp"]),
+        "czsc": _stdio_config(["decidra.mcp_server.czsc_server"]),
     }
 
 

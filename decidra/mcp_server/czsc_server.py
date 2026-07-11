@@ -154,8 +154,16 @@ def build_server() -> FastMCP:
 
 
 def main() -> None:
-    """以 stdio 传输运行缠论 MCP 服务器。"""
-    build_server().run(transport="stdio")
+    """以 stdio 传输运行缠论 MCP 服务器。
+
+    ``run`` 在父进程关闭 stdio 后返回；随后 ``os._exit`` 强制退出，确保子进程被
+    openharness 干净回收（与 futu/yfinance server 一致）。
+    """
+    import os
+    try:
+        build_server().run(transport="stdio")
+    finally:
+        os._exit(0)
 
 
 if __name__ == "__main__":

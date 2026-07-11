@@ -976,9 +976,15 @@ class MainLayoutTab(Container):
         """组合主界面布局"""
         yield StockListPanel(id="stock_list_panel")
         yield UserGroupPanel(id="user_group_panel")
-        # 下半区为智能终端控制台，替换原 InfoPanel（id 保持 info_panel 以复用布局与引用）
-        from .terminal.console_panel import TerminalConsolePanel
-        yield TerminalConsolePanel(title="🖥 智能终端", id="info_panel")
+        # 下半区为智能终端控制台，替换原 InfoPanel（id 保持 info_panel 以复用布局与引用）。
+        # 优雅降级：终端面板导入失败（如缺依赖）时退回信息面板，主界面仍可用。
+        try:
+            from .terminal.console_panel import TerminalConsolePanel
+            yield TerminalConsolePanel(title="🖥 智能终端", id="info_panel")
+        except Exception as exc:
+            get_logger(__name__).error(f"终端面板不可用，退回信息面板: {exc}")
+            from .widgets.line_panel import InfoPanel
+            yield InfoPanel(title="系统信息（终端不可用）", id="info_panel")
 
 
 class AnalysisLayoutTab(Container):

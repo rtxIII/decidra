@@ -233,4 +233,48 @@ def build_server() -> FastMCP:
             enable_risk_check=True,
         ))
 
+    @mcp.tool()
+    def futu_modify_order(
+        order_id: str,
+        price: float | None = None,
+        qty: int | None = None,
+        trd_env: str = "SIMULATE",
+        market: str = "HK",
+    ) -> str:
+        """改单（修改已提交订单的价格/数量）。这是会影响真实委托的操作，请谨慎。
+
+        默认在模拟盘（SIMULATE）执行。实盘（REAL）操作前需先解锁交易。
+
+        Args:
+            order_id: 待修改的订单号。
+            price: 新的委托价格；None 表示不改价。
+            qty: 新的委托数量；None 表示不改量。
+            trd_env: 交易环境，SIMULATE（默认）或 REAL。
+            market: 市场，HK / US / CN，默认 HK。
+        """
+        return _guarded(lambda: _get_trade().modify_order(
+            order_id=order_id,
+            price=price,
+            qty=qty,
+            trd_env=trd_env,
+            market=market,
+        ))
+
+    @mcp.tool()
+    def futu_cancel_order(order_id: str, trd_env: str = "SIMULATE", market: str = "HK") -> str:
+        """撤单（撤销已提交的订单）。这是会影响真实委托的操作，请谨慎。
+
+        默认在模拟盘（SIMULATE）执行。实盘（REAL）操作前需先解锁交易。
+
+        Args:
+            order_id: 待撤销的订单号。
+            trd_env: 交易环境，SIMULATE（默认）或 REAL。
+            market: 市场，HK / US / CN，默认 HK。
+        """
+        return _guarded(lambda: _get_trade().cancel_order(
+            order_id=order_id,
+            trd_env=trd_env,
+            market=market,
+        ))
+
     return mcp

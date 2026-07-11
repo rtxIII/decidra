@@ -391,6 +391,7 @@ class LifecycleManager:
             from ..terminal.runtime_bridge import TerminalRuntime
             from ..terminal.permission_dialogs import make_permission_callbacks
             from ..terminal.auth_migrate import migrate_ai_config
+            from ...mcp_server.register import register_futu_mcp_server
 
             app = self.app_core.app
 
@@ -399,6 +400,12 @@ class LifecycleManager:
                 migrate_ai_config()
             except Exception as exc:
                 self.logger.warning(f"AI 配置迁移跳过: {exc}")
+
+            # 注册富途 MCP 服务器（幂等），使 agent 可查行情/账户/受控下单
+            try:
+                register_futu_mcp_server()
+            except Exception as exc:
+                self.logger.warning(f"富途 MCP 注册跳过: {exc}")
 
             # 权限与追问回调（Textual 对话框式）
             permission_prompt, ask_user_prompt = make_permission_callbacks(app)

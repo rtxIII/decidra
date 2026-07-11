@@ -136,6 +136,29 @@ def build_server() -> FastMCP:
         return _guarded(lambda: _get_market().get_cur_kline([code], num=num, ktype=ktype, autype=autype))
 
     @mcp.tool()
+    def futu_get_history_kline(
+        code: str,
+        start: str,
+        end: str,
+        ktype: str = "K_DAY",
+        autype: str = "qfq",
+        max_count: int = 1000,
+    ) -> str:
+        """获取股票历史 K 线数据（指定日期区间）。
+
+        Args:
+            code: 股票代码，如 "HK.00700"。
+            start: 起始日期，格式 "YYYY-MM-DD"。
+            end: 结束日期，格式 "YYYY-MM-DD"。
+            ktype: K 线类型，如 K_DAY / K_WEEK / K_MON / K_1M / K_5M / K_15M / K_60M。
+            autype: 复权类型，qfq（前复权）/ hfq（后复权）/ None（不复权）。
+            max_count: 最大返回条数，默认 1000。
+        """
+        return _guarded(lambda: _get_market().request_history_kline(
+            code, start, end, ktype=ktype, autype=autype, max_count=max_count
+        ))
+
+    @mcp.tool()
     def futu_get_orderbook(code: str) -> str:
         """获取股票的买卖盘口（五档/十档）。
 

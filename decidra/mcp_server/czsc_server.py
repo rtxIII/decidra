@@ -12,9 +12,13 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import logging
 from typing import Any, Callable
 
 from mcp.server.fastmcp import FastMCP
+
+# stdio 传输下 stdout 专供 MCP 协议，日志经 logging 走 stderr，不污染协议通道。
+_LOG = logging.getLogger(__name__)
 
 TOOL_TIMEOUT_SECONDS: float = 20.0
 _EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="czsc-tool")
@@ -29,11 +33,18 @@ _FREQ_MAP = {
     "15分钟": ("15分钟", "15m"),
 }
 
-# 精选缠论信号（买卖点 / 笔状态 / 趋势），返回值非“其他”即视为触发。
+# 精选缠论信号（买卖点 / 笔状态 / 趋势 / 中枢），返回值非“其他”即视为触发。
+# 全部使用 "其他" 作为未触发哨兵，与下方过滤逻辑一致。
 _CURATED_SIGNALS = [
+    # 买卖点：一/二/三类买卖点（缠论核心反转与延续信号）
+    "cxt_first_buy_V221126",
+    "cxt_first_sell_V221126",
+    "cxt_second_bs_V230320",
     "cxt_third_buy_V230228",
     "cxt_third_bs_V230318",
-    "cxt_second_bs_V230320",
+    # 中枢结构（仅收录单级别 CZSC 信号；zhong_shu_gong_zhen 需多级别 cat，不适用）
+    "cxt_double_zs_V230311",
+    # 笔状态 / 趋势 / 笔数结构
     "cxt_bi_status_V230101",
     "cxt_bi_end_V230618",
     "cxt_bi_trend_V230824",
@@ -116,7 +127,9 @@ def build_server() -> FastMCP:
                         # 值以 "其他_..." 开头视为未触发
                         if not str(v).startswith("其他"):
                             fired[k] = v
-                except Exception:
+                except Exception as exc:
+                    # 单个信号在特定标的/数据上报错不应中断整体分析；记日志便于排查
+                    _LOG.debug("缠论信号 %s 计算失败: %s", name, exc)
                     continue
 
             last_bi = c.bi_list[-1] if c.bi_list else None

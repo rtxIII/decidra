@@ -101,7 +101,9 @@ def build_server() -> FastMCP:
     mcp = FastMCP("czsc")
 
     @mcp.tool()
-    def czsc_chan_analysis(symbol: str, period: str = "1y", freq: str = "日线") -> str:
+    def czsc_chan_analysis(
+        symbol: str, period: str = "1y", freq: str = "日线", params: dict | None = None
+    ) -> str:
         """对股票做缠论（czsc）分析：分型/笔/中枢结构 + 精选买卖点信号。
 
         用 yfinance 取 K 线（覆盖全球股票，如 AAPL、MSFT；港股用 0700.HK；A股用
@@ -111,7 +113,14 @@ def build_server() -> FastMCP:
             symbol: yfinance 股票代码，如 "AAPL"、"0700.HK"、"600519.SS"。
             period: 数据周期，如 "6mo" / "1y" / "2y"，默认 "1y"。
             freq: K 线级别，可选 日线/周线/月线/60分钟/30分钟/15分钟，默认 日线。
+            params: 可选，透传给全部精选信号的参数（信号忽略不认识的键）。常用：
+                ``di``（回溯第几笔，默认 1，越大越靠历史）；``ma_type``/``timeperiod``
+                （二/三类买卖点的均线类型与周期，如 {"ma_type":"EMA","timeperiod":21}）；
+                ``max_overlap``（笔终结容差）、``n``/``th``（趋势阈值）。
+                示例：{"di": 2, "timeperiod": 21}。参数非法的信号会被跳过。
         """
+        signal_params = params or {}
+
         def _run():
             c = _build_czsc(symbol, period, freq)
             from .czsc_lite import signals_cxt as cxt
@@ -122,7 +131,7 @@ def build_server() -> FastMCP:
                 if fn is None:
                     continue
                 try:
-                    sig = dict(fn(c))
+                    sig = dict(fn(c, **signal_params))
                     for k, v in sig.items():
                         # 值以 "其他_..." 开头视为未触发
                         if not str(v).startswith("其他"):

@@ -3,6 +3,7 @@
 在终端运行时构建前调用，使 openharness 通过 stdio 以子进程方式连接各服务器：
 - ``futu``     -> ``python -m decidra.mcp_server``（富途行情/交易，需 OpenD）
 - ``yfinance`` -> ``python -m decidra.mcp_server.yfinance_mcp``（雅虎财经，免费无 key）
+- ``czsc``     -> ``python -m decidra.mcp_server.czsc_server``（缠论信号分析，免费无 key）
 
 仅在对应 ``mcp_servers.<name>`` 缺失或过期时写入，保留用户其它设置。
 """
@@ -19,8 +20,6 @@ SETTINGS_PATH: Path = DECIDRA_HOME / "openharness" / "settings.json"
 
 # 项目根（decidra 包的父目录），供子进程 PYTHONPATH 导入 decidra。
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
-
-SERVER_NAME = "futu"
 
 
 @dataclass(frozen=True)
@@ -101,7 +100,7 @@ def _write_servers(desired: dict[str, dict]) -> RegisterResult:
 
 
 def register_mcp_servers() -> RegisterResult:
-    """把 Decidra 全部 MCP server（futu + yfinance）幂等注册到 settings.json。"""
+    """把 Decidra 全部 MCP server（futu + yfinance + czsc）幂等注册到 settings.json。"""
     return _write_servers(_desired_servers())
 
 

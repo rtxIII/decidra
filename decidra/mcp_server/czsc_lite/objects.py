@@ -676,12 +676,6 @@ class Event:
         signals = {x.signal if isinstance(x, Signal) else x for x in signals}
         return list(signals)
 
-    def get_signals_config(self, signals_module: str = "czsc.signals") -> List[Dict]:
-        """获取事件的信号配置"""
-        from czsc.traders.sig_parse import get_signals_config
-
-        return get_signals_config(self.unique_signals, signals_module)
-
     def is_match(self, s: dict):
         """判断 event 是否满足
 
@@ -848,12 +842,6 @@ class Position:
             signals.extend(e.unique_signals)
         return list(set(signals))
 
-    def get_signals_config(self, signals_module: str = "czsc.signals") -> List[Dict]:
-        """获取事件的信号配置"""
-        from czsc.traders.sig_parse import get_signals_config
-
-        return get_signals_config(self.unique_signals, signals_module)
-
     def dump(self, with_data=False):
         """将对象转换为 dict"""
         raw = {
@@ -1012,18 +1000,6 @@ class Position:
                 "日胜率": round(sum(dfv > 0) / len(dfv), 4),
             }
         )
-        return p
-
-    def evaluate(self, trade_dir: str = "多空") -> dict:
-        """评估交易表现
-
-        :param trade_dir: 交易方向，可选值 ['多头', '空头', '多空']
-        :return: 交易表现
-        """
-        from czsc.utils.stats import evaluate_pairs
-
-        p = evaluate_pairs(pd.DataFrame(self.pairs), trade_dir)
-        p.update(self.evaluate_holds(trade_dir))
         return p
 
     def update(self, s: dict):

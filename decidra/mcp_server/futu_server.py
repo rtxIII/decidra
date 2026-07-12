@@ -16,9 +16,13 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import logging
 from typing import Any, Callable
 
 from mcp.server.fastmcp import FastMCP
+
+# stdio 传输下 stdout 专供 MCP 协议，日志经 logging 走 stderr，不污染协议通道。
+_LOG = logging.getLogger(__name__)
 
 # 富途 SDK 为同步阻塞调用；OpenD 未授权行情/配额不足时会长时间阻塞。用线程 + 超时
 # 包装，使工具超时返回错误而非挂死 agent 回合。
@@ -53,8 +57,8 @@ def _serialize(obj: Any) -> Any:
         import pandas as pd
         if isinstance(obj, pd.DataFrame):
             return obj.to_dict(orient="records")
-    except Exception:
-        pass
+    except ImportError:
+        pass  # pandas 为可选依赖，缺失时退回通用序列化
     if obj is None or isinstance(obj, (str, int, float, bool)):
         return obj
     if isinstance(obj, dict):
@@ -64,8 +68,9 @@ def _serialize(obj: Any) -> Any:
     if hasattr(obj, "to_dict"):
         try:
             return _serialize(obj.to_dict())
-        except Exception:
-            pass
+        except Exception as exc:
+            # to_dict 失败则退回 __dict__ / str 序列化，记日志便于排查
+            _LOG.debug("对象 %s 的 to_dict 序列化失败，回退: %s", type(obj).__name__, exc)
     if hasattr(obj, "__dict__"):
         return {str(k): _serialize(v) for k, v in vars(obj).items() if not k.startswith("_")}
     return str(obj)

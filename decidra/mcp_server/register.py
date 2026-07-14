@@ -4,6 +4,7 @@
 - ``futu``     -> ``python -m decidra.mcp_server``（富途行情/交易，需 OpenD）
 - ``yfinance`` -> ``python -m decidra.mcp_server.yfinance_mcp``（雅虎财经，免费无 key）
 - ``czsc``     -> ``python -m decidra.mcp_server.czsc_server``（缠论信号分析，免费无 key）
+- ``strategy`` -> ``python -m decidra.mcp_server.strategy_server``（策略告警读取与研判写回）
 
 仅在对应 ``mcp_servers.<name>`` 缺失或过期时写入，保留用户其它设置。
 """
@@ -15,8 +16,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-DECIDRA_HOME: Path = Path.home() / ".decidra"
-SETTINGS_PATH: Path = DECIDRA_HOME / "openharness" / "settings.json"
+from ..utils.global_vars import (
+    DECIDRA_PATH as DECIDRA_HOME,
+    PATH_OPENHARNESS_SETTINGS as SETTINGS_PATH,
+)
 
 # 项目根（decidra 包的父目录），供子进程 PYTHONPATH 导入 decidra。
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
@@ -57,6 +60,7 @@ def _desired_servers() -> dict[str, dict]:
         "futu": _stdio_config(["decidra.mcp_server"]),
         "yfinance": _stdio_config(["decidra.mcp_server.yfinance_mcp"]),
         "czsc": _stdio_config(["decidra.mcp_server.czsc_server"]),
+        "strategy": _stdio_config(["decidra.mcp_server.strategy_server"]),
     }
 
 

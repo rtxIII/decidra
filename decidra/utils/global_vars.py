@@ -29,6 +29,18 @@ PATH_FILTERS = PATH / 'filters'
 PATH_STRATEGIES = PATH / 'strategies'
 PATH_FILTER_REPORT = PATH / 'stock_filter_report'
 
+# ============================================================================
+# OpenHarness 集成与策略模块路径（统一定义，勿在各模块重复硬编码）
+# 始终位于用户目录 ~/.decidra，不随 DECIDRA_DEV_MODE 切换：
+# openharness 配置/凭证与策略运行时状态跨开发环境共享。
+# ============================================================================
+PATH_OPENHARNESS = DECIDRA_PATH / 'openharness'
+PATH_OPENHARNESS_DATA = PATH_OPENHARNESS / 'data'
+PATH_OPENHARNESS_SETTINGS = PATH_OPENHARNESS / 'settings.json'
+PATH_OHMO_WORKSPACE = DECIDRA_PATH / 'ohmo'
+PATH_STRATEGY_CONFIG = DECIDRA_PATH / 'strategy'
+PATH_STRATEGY_RUNTIME = DECIDRA_PATH / '.runtime' / 'strategy'
+
 # 常量定义
 DATETIME_FORMAT_DW = '%Y-%m-%d'
 DATETIME_FORMAT_M = ''

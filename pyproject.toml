@@ -73,6 +73,7 @@ dependencies = [
     "rich==13.9.4",
     "rich_interactive==0.6.0",
     "colorama",
+    "openharness-ai==0.1.9",
     
     # Textual UI framework
     "textual",

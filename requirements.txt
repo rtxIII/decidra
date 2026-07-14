@@ -41,3 +41,4 @@ textual-autocomplete==4.0.4
 textual-slidecontainer
 textual-plotext==1.0.1
 textual-datepicker==0.2.4
+openharness-ai==0.1.9

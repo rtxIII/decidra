@@ -27,6 +27,9 @@ class LifecycleManager:
         
         # 任务监控
         self._task_monitor_timer: Optional[asyncio.Task] = None
+
+        # 策略告警监视
+        self._strategy_alerts_task: Optional[asyncio.Task] = None
         
         # 标签页状态管理器 - 延迟初始化
         self._tab_state_manager: Optional['TabStateManager'] = None
@@ -82,6 +85,9 @@ class LifecycleManager:
         
         # 启动任务监控
         await self.start_task_monitoring()
+
+        # 启动策略告警监视（tail alerts.jsonl → 终端面板）
+        self.start_strategy_alerts_watch()
         
         # 恢复标签页状态（在所有初始化完成后）临时关闭
         #await self.restore_tab_state()
@@ -214,6 +220,10 @@ class LifecycleManager:
             if self._task_monitor_timer:
                 self._task_monitor_timer.cancel()
                 self._task_monitor_timer = None
+
+            if self._strategy_alerts_task:
+                self._strategy_alerts_task.cancel()
+                self._strategy_alerts_task = None
                 self.logger.debug("任务监控定时器已停止")
             
             # 2. 取消所有异步任务
@@ -327,6 +337,13 @@ class LifecycleManager:
             # 关闭智能终端运行时（纳入超时保护，避免 close 挂起阻塞退出）
             cleanup_tasks.append(self.stop_terminal_runtime())
 
+            # 关闭随 monitor 托管的 cron 调度器（外部启动的不干预）
+            try:
+                from ..terminal.cron_daemon import stop_cron_scheduler
+                cleanup_tasks.append(stop_cron_scheduler())
+            except Exception as exc:
+                self.logger.warning(f"cron 调度器关闭跳过: {exc}")
+
             # 断开富途连接
             data_manager = getattr(self.app_core.app, 'data_manager', None)
             if data_manager and data_manager.futu_market:
@@ -358,6 +375,50 @@ class LifecycleManager:
         except Exception as e:
             self.logger.error(f"资源清理失败: {e}")
             # 继续退出过程，不让异常阻止程序退出
+
+    def start_strategy_alerts_watch(self) -> None:
+        """启动策略告警监视：增量读取 alerts.jsonl，新告警写入终端面板。"""
+        if self._strategy_alerts_task and not self._strategy_alerts_task.done():
+            return
+        self._strategy_alerts_task = asyncio.create_task(self.strategy_alerts_loop())
+        self.logger.info("策略告警监视已启动")
+
+    async def strategy_alerts_loop(self) -> None:
+        """策略告警监视循环：面板就绪后先播报概况与最近告警，此后 30 秒增量播报新增。
+
+        sleep 置于每轮开头（含首轮回放前的等待面板期），保证任何异常路径下
+        本循环都不会退化为无延时忙循环。
+        """
+        from ...strategy.alerts import ALERTS_PATH, read_new_alerts
+        from ...strategy.display import build_startup_lines, format_alert
+
+        offset = ALERTS_PATH.stat().st_size if ALERTS_PATH.exists() else 0
+        replay_done = False
+        while True:
+            try:
+                if not replay_done:
+                    panel = self._get_terminal_panel()
+                    if panel is not None:
+                        for line in build_startup_lines():
+                            panel.write_transcript(line)
+                        replay_done = True
+                await asyncio.sleep(30)
+                alerts, offset = read_new_alerts(offset)
+                if not alerts:
+                    continue
+                panel = self._get_terminal_panel()
+                for alert in alerts:
+                    if panel is not None:
+                        panel.write_transcript(format_alert(alert))
+                    self.logger.info(
+                        "策略告警: %s %s %s",
+                        alert.get("symbol"), alert.get("action"), alert.get("reason"),
+                    )
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                self.logger.error(f"策略告警监视异常: {exc}")
+                await asyncio.sleep(30)
 
     def start_terminal_runtime(self) -> None:
         """启动智能终端运行时（后台构建，不阻塞挂载）。
@@ -406,6 +467,13 @@ class LifecycleManager:
                 register_mcp_servers()
             except Exception as exc:
                 self.logger.warning(f"MCP 服务器注册跳过: {exc}")
+
+            # 随 monitor 托管 cron 调度器（已有外部调度器在跑则跳过）
+            try:
+                from ..terminal.cron_daemon import start_cron_scheduler
+                start_cron_scheduler()
+            except Exception as exc:
+                self.logger.warning(f"cron 调度器托管启动跳过: {exc}")
 
             # 权限与追问回调（Textual 对话框式）
             permission_prompt, ask_user_prompt = make_permission_callbacks(app)

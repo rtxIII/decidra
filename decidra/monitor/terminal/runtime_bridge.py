@@ -21,9 +21,12 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 # —— 配置目录收拢到 ~/.decidra/，必须在导入 openharness 之前设置 ——
-DECIDRA_HOME: Path = Path.home() / ".decidra"
-OPENHARNESS_CONFIG_DIR: Path = DECIDRA_HOME / "openharness"
-OHMO_WORKSPACE: Path = DECIDRA_HOME / "ohmo"
+# 路径统一定义于 utils.global_vars（仅依赖标准库+yaml，先于 openharness 导入安全）
+from ...utils.global_vars import (
+    DECIDRA_PATH as DECIDRA_HOME,
+    PATH_OHMO_WORKSPACE as OHMO_WORKSPACE,
+    PATH_OPENHARNESS as OPENHARNESS_CONFIG_DIR,
+)
 
 # 网关按 user-agent 拦截 SDK 默认 UA；覆盖为无害 UA 即可通过 WAF。
 GATEWAY_USER_AGENT: str = "decidra-terminal/1.0"
@@ -371,6 +374,19 @@ class TerminalRuntime:
             render_event=render_event,
             clear_output=clear_output or _noop_clear,
         )
+
+    def list_slash_commands(self) -> list[tuple[str, str]]:
+        """已注册斜杠命令的 (name, description) 列表（name 不含斜杠）。
+
+        供终端面板做输入命令提示；未连接（运行时尚未启动/构建失败）时返回空。
+        """
+        if self._bundle is None:
+            return []
+        try:
+            return [(c.name, c.description) for c in self._bundle.commands.list_commands()]
+        except Exception as exc:
+            self.logger.debug("获取斜杠命令列表失败: %s", exc)
+            return []
 
     async def close(self) -> None:
         """关闭运行时并释放资源（幂等）。"""

@@ -22,10 +22,12 @@ from pathlib import Path
 
 from ...utils.global_vars import get_config, get_logger
 
-# 迁移目标：与 runtime_bridge 的 OPENHARNESS_CONFIG_DIR 一致。
-DECIDRA_HOME: Path = Path.home() / ".decidra"
-OPENHARNESS_CONFIG_DIR: Path = DECIDRA_HOME / "openharness"
-SETTINGS_PATH: Path = OPENHARNESS_CONFIG_DIR / "settings.json"
+# 迁移目标：与 runtime_bridge 的 OPENHARNESS_CONFIG_DIR 一致（定义于 global_vars）。
+from ...utils.global_vars import (
+    DECIDRA_PATH as DECIDRA_HOME,
+    PATH_OPENHARNESS as OPENHARNESS_CONFIG_DIR,
+    PATH_OPENHARNESS_SETTINGS as SETTINGS_PATH,
+)
 
 # config.ini [Analyzer] 段的源字段名。
 _SRC_API_KEY = "anthropicapikey"

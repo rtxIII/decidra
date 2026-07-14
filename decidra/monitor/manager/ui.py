@@ -218,6 +218,20 @@ class UIManager:
         
         # 初始化表格焦点状态
         await self.update_table_focus()
+
+    def _get_stock_display_name(self, stock_code: str, fallback_name: str) -> str:
+        """优先使用股票基础信息缓存中的展示名称。"""
+        stock_basicinfo_cache = getattr(self.app_core, 'stock_basicinfo_cache', {})
+        if isinstance(stock_basicinfo_cache, dict):
+            cached_stock_info = stock_basicinfo_cache.get(stock_code, {})
+            if isinstance(cached_stock_info, dict):
+                cached_stock_name = cached_stock_info.get('name')
+                if isinstance(cached_stock_name, str) and cached_stock_name.strip():
+                    return cached_stock_name
+
+        if isinstance(fallback_name, str) and fallback_name.strip():
+            return fallback_name
+        return stock_code
     
     async def update_stock_table(self) -> None:
         """更新股票表格"""
@@ -237,11 +251,15 @@ class UIManager:
                     change_str = f"{stock_info.change_rate:.2f}%"
                     volume_str = f"{stock_info.volume:,}"
                     time_str = stock_info.update_time.strftime("%H:%M:%S")
+                    stock_display_name = self._get_stock_display_name(
+                        stock_code,
+                        stock_info.name,
+                    )
                     
-                    self.logger.debug(f'UI更新股票数据: {stock_code} - {stock_info.name} {price_str} {change_str}')
+                    self.logger.debug(f'UI更新股票数据: {stock_code} - {stock_display_name} {price_str} {change_str}')
                     
                     
-                    self.stock_table.update_cell(stock_code,'name', stock_info.name)
+                    self.stock_table.update_cell(stock_code, 'name', stock_display_name)
                     self.stock_table.update_cell(stock_code,'time', time_str)
 
                     # 更新行数据 - 先应用闪烁效果
@@ -609,7 +627,10 @@ class UIManager:
 
                     # 提取持仓信息
                     stock_code = position.get('stock_code', '')
-                    stock_name = position.get('stock_name', '')
+                    stock_name = self._get_stock_display_name(
+                        stock_code,
+                        position.get('stock_name', ''),
+                    )
                     qty = str(int(position.get('qty', 0)))
                     can_sell_qty = str(int(position.get('can_sell_qty', 0)))
                     cost_price = f"{position.get('cost_price', 0):.3f}"

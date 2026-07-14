@@ -934,34 +934,37 @@ class DataManager:
             if not cache_file_path.exists():
                 self.logger.info("本地股票基本信息缓存文件不存在")
                 return False
-            
+
+            with open(cache_file_path, 'r', encoding='utf-8') as f:
+                cache_data = json.load(f)
+
+            if not isinstance(cache_data, dict) or not isinstance(cache_data.get('data'), dict):
+                self.logger.warning("缓存文件格式无效")
+                return False
+
+            cached_basicinfo = cache_data['data']
+            self.app_core.stock_basicinfo_cache.clear()
+            self.app_core.stock_basicinfo_cache.update(cached_basicinfo)
+
             file_mtime = os.path.getmtime(cache_file_path)
             current_time = time.time()
             cache_age_hours = (current_time - file_mtime) / 3600
-            
             if cache_age_hours > CACHE_EXPIRY_HOURS:
-                self.logger.info(f"股票基本信息缓存已过期 ({cache_age_hours:.1f}小时 > {CACHE_EXPIRY_HOURS}小时)")
+                self.logger.info(
+                    f"股票基本信息缓存已过期 ({cache_age_hours:.1f}小时 > {CACHE_EXPIRY_HOURS}小时)，"
+                    "已预载缓存数据，将从API刷新"
+                )
                 return False
-            
-            with open(cache_file_path, 'r', encoding='utf-8') as f:
-                cache_data = json.load(f)
-            
-            if not isinstance(cache_data, dict) or 'data' not in cache_data:
-                self.logger.warning("缓存文件格式无效")
-                return False
-            
-            cached_stocks = set(cache_data['data'].keys())
+
+            cached_stocks = set(cached_basicinfo.keys())
             monitored_stocks = set(self.app_core.monitored_stocks)
-            
+
             if not monitored_stocks.issubset(cached_stocks):
                 missing_stocks = monitored_stocks - cached_stocks
                 self.logger.info(f"缓存中缺少部分股票信息: {missing_stocks}")
                 return False
-            
-            self.app_core.stock_basicinfo_cache.clear()
-            self.app_core.stock_basicinfo_cache.update(cache_data['data'])
-            
-            self.logger.info(f"成功从本地缓存加载 {len(cache_data['data'])} 只股票基本信息")
+
+            self.logger.info(f"成功从本地缓存加载 {len(cached_basicinfo)} 只股票基本信息")
             return True
             
         except Exception as e:
@@ -1008,7 +1011,10 @@ class DataManager:
             
             # 本地缓存无效，需要API连接来获取数据
             if self.app_core.connection_status != ConnectionStatus.CONNECTED:
-                self.logger.warning("富途API未连接且本地缓存无效，无法加载股票基本信息")
+                if self.app_core.stock_basicinfo_cache:
+                    self.logger.warning("富途API未连接，继续使用已加载的股票基本信息缓存")
+                else:
+                    self.logger.warning("富途API未连接且本地缓存无效，无法加载股票基本信息")
                 return
             
             self.logger.info(f"开始从API加载 {len(self.app_core.monitored_stocks)} 只股票的基本信息...")

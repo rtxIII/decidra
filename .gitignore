@@ -152,3 +152,12 @@ CLAUDE.md
 #not ready 
 docs/*
 src/tests/
+
+!decidra/tests/
+decidra/tests/*
+!decidra/tests/test_monitor_stock_names.py
+!decidra/tests/test_monitor_stock_name_cache.py
+!decidra/tests/test_czsc_lite.py
+!decidra/tests/test_strategy_runner.py
+!decidra/tests/test_terminal_cron_daemon.py
+!decidra/tests/test_terminal_enrich_dialog.py

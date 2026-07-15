@@ -468,6 +468,22 @@ class LifecycleManager:
             except Exception as exc:
                 self.logger.warning(f"MCP 服务器注册跳过: {exc}")
 
+            # 启动调度器前先同步任务注册表（迁移旧单体 job、清理禁用策略的孤儿 job），
+            # 失败只告警不阻塞启动；错误推送到终端面板（如非法策略名会让整批同步
+            # 失败，此时合法策略的配置变更也不生效，用户须可见）
+            try:
+                from ...tasks.registry import sync_jobs
+                sync_result = sync_jobs()
+                if sync_result["removed"]:
+                    self.logger.info(f"cron 注册表已清理失效 job: {sync_result['removed']}")
+            except Exception as exc:
+                self.logger.warning(
+                    f"cron 任务注册表同步失败（可手动执行 python -m decidra.tasks install）: {exc}"
+                )
+                panel.write_transcript(
+                    f"[yellow]· 策略任务同步失败，调度可能未更新：{exc}[/yellow]"
+                )
+
             # 随 monitor 托管 cron 调度器（已有外部调度器在跑则跳过）
             try:
                 from ..terminal.cron_daemon import start_cron_scheduler

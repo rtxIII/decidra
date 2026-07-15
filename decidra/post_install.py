@@ -89,9 +89,6 @@ def create_directories_manually():
         decidra_dir / '.runtime' / 'config',
         decidra_dir / '.runtime' / 'data',
         decidra_dir / '.runtime' / 'log',
-        decidra_dir / 'filters',
-        decidra_dir / 'strategies',
-        decidra_dir / 'stock_filter_report',
     ]
 
     for directory in directories:
@@ -253,13 +250,11 @@ def create_readme():
 ~/.decidra/
 ├── config.ini                 # 主配置文件（请编辑此文件）
 ├── config_template.ini        # 配置模板（参考用）
-├── .runtime/                  # 运行时数据
-│   ├── config/                # 运行时配置
-│   ├── data/                  # 数据缓存
-│   └── log/                   # 日志文件
-├── filters/                   # 自定义过滤器
-├── strategies/                # 自定义策略
-└── stock_filter_report/       # 筛选报告
+├── strategy/                  # 策略配置（config.json）
+└── .runtime/                  # 运行时数据
+    ├── config/                # 运行时配置
+    ├── data/                  # 数据缓存
+    └── log/                   # 日志文件
 ```
 
 ## 首次配置

@@ -12,18 +12,11 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import subprocess
 import sys
 from pathlib import Path
 
-from ...utils.global_vars import get_logger
-
-# 与 runtime_bridge 的 OPENHARNESS_CONFIG_DIR 一致（定义于 global_vars）。
-from ...utils.global_vars import (
-    DECIDRA_PATH as DECIDRA_HOME,
-    PATH_OPENHARNESS as OPENHARNESS_CONFIG_DIR,
-)
+from ...utils.global_vars import DECIDRA_PATH as DECIDRA_HOME, get_logger
 
 # SIGTERM 后的优雅退出等待；须小于 cleanup_resources 的 3 秒总超时。
 STOP_GRACE_SECONDS: float = 2.0
@@ -68,7 +61,8 @@ def start_cron_scheduler() -> bool:
         return False
 
     # 与 runtime_bridge 一致：openharness 导入前收拢配置目录（幂等）。
-    os.environ.setdefault("OPENHARNESS_CONFIG_DIR", str(OPENHARNESS_CONFIG_DIR))
+    from ...utils.global_vars import ensure_openharness_env
+    ensure_openharness_env()
     from openharness.config.paths import get_logs_dir
     from openharness.services.cron_scheduler import is_scheduler_running
 

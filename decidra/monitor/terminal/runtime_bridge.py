@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -25,7 +24,6 @@ from typing import Awaitable, Callable
 from ...utils.global_vars import (
     DECIDRA_PATH as DECIDRA_HOME,
     PATH_OHMO_WORKSPACE as OHMO_WORKSPACE,
-    PATH_OPENHARNESS as OPENHARNESS_CONFIG_DIR,
 )
 
 # 网关按 user-agent 拦截 SDK 默认 UA；覆盖为无害 UA 即可通过 WAF。
@@ -43,8 +41,8 @@ def _bootstrap_openharness() -> None:
     global _BOOTSTRAPPED
     if _BOOTSTRAPPED:
         return
-    OPENHARNESS_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("OPENHARNESS_CONFIG_DIR", str(OPENHARNESS_CONFIG_DIR))
+    from ...utils.global_vars import ensure_openharness_env
+    ensure_openharness_env()
 
     # mcp 别名 shim：openharness 0.1.9 硬 import 旧符号名 streamable_http_client。
     import mcp.client.streamable_http as _streamable_http

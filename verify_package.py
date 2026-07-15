@@ -46,7 +46,7 @@ def check_package_structure():
     print(f"✓ decidra/ 目录存在")
 
     # 检查主要模块
-    modules = ["api", "base", "modules", "monitor", "strategies", "utils"]
+    modules = ["api", "base", "modules", "monitor", "strategy", "tasks", "utils"]
 
     for module in modules:
         module_path = decidra_dir / module

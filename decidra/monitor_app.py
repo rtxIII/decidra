@@ -225,6 +225,11 @@ class MonitorApp(App):
         """处理表格行选择事件 - 委托给事件处理器"""
         if not self.show_splash and self.managers_initialized:
             await self.event_handler.on_data_table_row_selected(event)
+
+    async def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """处理表格光标移动事件 - 委托给事件处理器（同步 app_core 光标）"""
+        if not self.show_splash and self.managers_initialized:
+            await self.event_handler.on_data_table_row_highlighted(event)
     
     # 动作方法 - 委托给事件处理器
     async def action_add_stock(self) -> None:
@@ -236,7 +241,12 @@ class MonitorApp(App):
         """删除股票动作"""
         if not self.show_splash and self.managers_initialized:
             await self.event_handler.action_delete_stock()
-    
+
+    async def action_stock_menu(self) -> None:
+        """股票操作菜单动作（股票表激活时按回车触发）"""
+        if not self.show_splash and self.managers_initialized:
+            await self.event_handler.action_stock_menu()
+
     async def action_refresh(self) -> None:
         """手动刷新动作"""
         if not self.show_splash and self.managers_initialized:

@@ -120,27 +120,86 @@ class TestAlerts(unittest.TestCase):
             self.assertTrue(reloaded.should_fire("TEST", "s", "BUY", "bar2"), "新K线应放行")
             self.assertTrue(reloaded.should_fire("TEST", "s", "SELL", "bar1"), "不同动作独立去重")
 
+    def test_dedupe_unconfirmed_upgrade_refires(self):
+        """未确认告警后同一K线转为已确认：视为新事件放行一次。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.json"
+            state = DedupeState(path)
+            state.mark("TEST", "s", "BUY", "bar1", confirmed=False)
+            state.save()
+
+            reloaded = DedupeState(path)
+            self.assertFalse(
+                reloaded.should_fire("TEST", "s", "BUY", "bar1", confirmed=False),
+                "同一K线重复的未确认告警应去重")
+            self.assertTrue(
+                reloaded.should_fire("TEST", "s", "BUY", "bar1", confirmed=True),
+                "未确认→已确认应放行（转正）")
+
+            reloaded.mark("TEST", "s", "BUY", "bar1", confirmed=True)
+            self.assertFalse(
+                reloaded.should_fire("TEST", "s", "BUY", "bar1", confirmed=True),
+                "转正后再次已确认应去重")
+            self.assertFalse(
+                reloaded.should_fire("TEST", "s", "BUY", "bar1", confirmed=False),
+                "已确认后降级不应再告警")
+
+    def test_dedupe_legacy_entry_treated_confirmed(self):
+        """旧状态文件（纯 bar_dt 值）按已确认解释。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.json"
+            path.write_text(json.dumps({"TEST|s|BUY": "bar1"}), encoding="utf-8")
+            state = DedupeState(path)
+            self.assertFalse(state.should_fire("TEST", "s", "BUY", "bar1", confirmed=True))
+            self.assertFalse(state.should_fire("TEST", "s", "BUY", "bar1", confirmed=False))
+
 
 class TestDecide(unittest.TestCase):
     """czsc_resonance 纯决策函数的规则分支。"""
 
     def test_cross_resonance(self):
         self.assertEqual(czsc_resonance.decide({}, None, "看多_任意_任意_0"),
-                         [("BUY", "周日线中枢共振看多")])
+                         [("BUY", "周日线中枢共振看多", [])])
         self.assertEqual(czsc_resonance.decide({}, None, "看空_任意_任意_0"),
-                         [("SELL", "周日线中枢共振看空")])
+                         [("SELL", "周日线中枢共振看空", [])])
 
-    def test_daily_bs_requires_weekly_direction(self):
+    def test_weekly_confirmed_no_caveat(self):
         fired = {"日线_D1_三买辅助V230228": "三买_10笔_任意_0"}
-        self.assertEqual(len(czsc_resonance.decide(fired, "向上", "其他")), 1)
-        self.assertEqual(czsc_resonance.decide(fired, "向下", "其他"), [], "周线向下不应产生买告警")
-        self.assertEqual(czsc_resonance.decide(fired, None, "其他"), [], "周线无笔不应产生买告警")
+        decisions = czsc_resonance.decide(fired, "向上", "其他")
+        self.assertEqual(len(decisions), 1)
+        action, reason, caveats = decisions[0]
+        self.assertEqual(action, "BUY")
+        self.assertIn("周线末笔向上", reason)
+        self.assertEqual(caveats, [], "周线同向确认不应有警示")
+
+    def test_weekly_opposed_fires_with_caveat(self):
+        """周线反向不再拦截：照常告警但带红字警示。"""
+        fired = {"日线_D1_三买辅助V230228": "三买_10笔_任意_0"}
+        decisions = czsc_resonance.decide(fired, "向下", "其他")
+        self.assertEqual(len(decisions), 1)
+        action, reason, caveats = decisions[0]
+        self.assertEqual(action, "BUY")
+        self.assertIn("三买", reason)
+        self.assertNotIn("周线末笔", reason, "未确认时理由不应含周线确认语")
+        self.assertEqual(
+            caveats,
+            [czsc_resonance.CAVEAT_WEEKLY_OPPOSED.format(direction="向下")])
+
+    def test_weekly_none_fires_with_caveat(self):
+        """周线笔未形成（次新股）不再拦截：照常告警但带红字警示。"""
+        fired = {"日线_D1_三买辅助V230228": "三买_10笔_任意_0"}
+        decisions = czsc_resonance.decide(fired, None, "其他")
+        self.assertEqual(len(decisions), 1)
+        action, _, caveats = decisions[0]
+        self.assertEqual(action, "BUY")
+        self.assertEqual(caveats, [czsc_resonance.CAVEAT_WEEKLY_NO_BI])
 
     def test_sell_branch(self):
         fired = {"日线_D1_一卖V221126": "一卖_5笔_任意_0"}
         decisions = czsc_resonance.decide(fired, "向下", "其他")
         self.assertEqual(len(decisions), 1)
         self.assertEqual(decisions[0][0], "SELL")
+        self.assertEqual(decisions[0][2], [])
 
     def test_same_action_reasons_merged(self):
         fired = {"日线_D1_三买辅助V230228": "三买_10笔_任意_0"}
@@ -149,21 +208,37 @@ class TestDecide(unittest.TestCase):
         self.assertIn("共振看多", decisions[0][1])
         self.assertIn("三买", decisions[0][1])
 
-    def test_conflict_resolved_by_resonance(self):
-        """共振与日线买卖点方向冲突时，仅保留共振方并标注反向证据。"""
+    def test_conflict_keeps_both_sides_with_caveat(self):
+        """共振与日线信号方向冲突时双侧都告警，反向侧带共振警示。"""
         fired = {"日线_D1_一卖V221126": "一卖_5笔_任意_0"}
         decisions = czsc_resonance.decide(fired, "向下", "看多_任意_任意_0")
-        self.assertEqual(len(decisions), 1, "冲突应消解为单条告警")
-        action, reason = decisions[0]
-        self.assertEqual(action, "BUY", "共振方向应胜出")
-        self.assertIn("反向证据", reason)
-        self.assertIn("一卖", reason)
+        self.assertEqual(len(decisions), 2, "冲突双侧都应保留")
+        by_action = {action: (reason, caveats) for action, reason, caveats in decisions}
+        self.assertIn("共振看多", by_action["BUY"][0])
+        self.assertEqual(by_action["BUY"][1], [], "共振侧不应有共振警示")
+        self.assertIn("一卖", by_action["SELL"][0])
+        self.assertIn(
+            czsc_resonance.CAVEAT_AGAINST_RESONANCE.format(side="看多"),
+            by_action["SELL"][1])
+        self.assertIn("周线末笔向下", by_action["SELL"][0], "周线同向确认语保留")
 
         fired = {"日线_D1_三买辅助V230228": "三买_10笔_任意_0"}
         decisions = czsc_resonance.decide(fired, "向上", "看空_任意_任意_0")
-        self.assertEqual(len(decisions), 1)
-        self.assertEqual(decisions[0][0], "SELL")
-        self.assertIn("三买", decisions[0][1])
+        by_action = {action: (reason, caveats) for action, reason, caveats in decisions}
+        self.assertIn(
+            czsc_resonance.CAVEAT_AGAINST_RESONANCE.format(side="看空"),
+            by_action["BUY"][1])
+
+    def test_conflict_without_resonance_marks_both(self):
+        """无共振方向时买卖信号并存：双侧都标注存在反向信号。"""
+        fired = {
+            "日线_D1_一买V221216": "一买_金叉_任意_0",
+            "日线_D1_一卖V221126": "一卖_5笔_任意_0",
+        }
+        decisions = czsc_resonance.decide(fired, "向上", "其他")
+        self.assertEqual(len(decisions), 2)
+        for _, _, caveats in decisions:
+            self.assertIn(czsc_resonance.CAVEAT_CONFLICT, caveats)
 
     def test_no_signal_no_decision(self):
         self.assertEqual(czsc_resonance.decide({}, "向上", "其他"), [])
@@ -291,25 +366,106 @@ class TestRunScan(unittest.TestCase):
             self.assertIn("BAD", summary["errors"])
             self.assertEqual(summary["scanned"], 2, "单只取数失败不应中断整轮扫描")
 
+    def test_strategy_filter_scans_only_named(self):
+        config = {
+            "watchlist": ["TEST"],
+            "strategies": [
+                {"name": "czsc_resonance", "enabled": True},
+                {"name": "no_such_strategy", "enabled": True},
+            ],
+        }
+        fetch = lambda symbol, days: _synthetic_daily_df(600)  # noqa: E731
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = run_scan(config, fetch, Path(tmp) / "a.jsonl", Path(tmp) / "s.json",
+                               strategy="czsc_resonance")
+            self.assertNotIn("no_such_strategy", summary["errors"],
+                             "--strategy 过滤后不应触碰其他策略")
+
+    def test_strategy_filter_unknown_returns_empty_scan(self):
+        config = {"watchlist": ["TEST"],
+                  "strategies": [{"name": "czsc_resonance", "enabled": True}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = run_scan(config, lambda s, d: _synthetic_daily_df(300),
+                               Path(tmp) / "a.jsonl", Path(tmp) / "s.json",
+                               strategy="ghost")
+            self.assertEqual(summary["scanned"], 0)
+            self.assertIn("ghost", summary["errors"])
+
 
 class TestInstallCron(unittest.TestCase):
-    def test_job_written_to_registry(self):
+    """cron job 同步（decidra.tasks 注册表：每个启用策略一个独立 job）。"""
+
+    CONFIG = {
+        "strategies": [
+            {"name": "czsc_resonance", "enabled": True},
+            {"name": "fast_strategy", "enabled": True, "schedule": "* * * * *"},
+            {"name": "disabled_one", "enabled": False},
+        ],
+        "cron": {"schedule": "*/30 1-8 * * 1-5"},
+    }
+
+    def test_build_jobs_per_strategy_with_schedule_override(self):
+        from decidra.tasks.registry import build_jobs
+
+        jobs = build_jobs(self.CONFIG)
+        by_name = {j["name"]: j for j in jobs}
+        self.assertEqual(
+            set(by_name),
+            {"decidra_strategy_czsc_resonance", "decidra_strategy_fast_strategy"},
+            "每个启用策略一个 job，禁用策略不注册",
+        )
+        self.assertEqual(
+            by_name["decidra_strategy_czsc_resonance"]["schedule"], "*/30 1-8 * * 1-5",
+            "未配置策略级 schedule 时回退顶层 cron.schedule",
+        )
+        self.assertEqual(
+            by_name["decidra_strategy_fast_strategy"]["schedule"], "* * * * *",
+            "策略级 schedule 覆盖顶层配置",
+        )
+        self.assertIn(
+            "--strategy czsc_resonance",
+            by_name["decidra_strategy_czsc_resonance"]["command"],
+        )
+
+    def test_sync_writes_jobs_and_removes_stale(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_env = os.environ.get("OPENHARNESS_CONFIG_DIR")
             os.environ["OPENHARNESS_CONFIG_DIR"] = tmp
             try:
-                job = install_cron({"cron": {"name": "test_scan", "schedule": "*/30 1-8 * * 1-5"}})
-                self.assertEqual(job["name"], "test_scan")
+                from openharness.services.cron import upsert_cron_job
+
+                # 旧单体 job、用户自有 job、用户自有 decidra_ 前缀 job 并存
+                upsert_cron_job({"name": "decidra_strategy_scan",
+                                 "schedule": "*/5 * * * *", "command": "old"})
+                upsert_cron_job({"name": "user_own_job",
+                                 "schedule": "0 0 * * *", "command": "keep"})
+                upsert_cron_job({"name": "decidra_backup",
+                                 "schedule": "0 1 * * *", "command": "keep"})
+
+                result = install_cron(self.CONFIG)
+
+                self.assertEqual(result["removed"], ["decidra_strategy_scan"],
+                                 "只清理策略前缀/遗留名单中的失效 job")
                 jobs = json.loads((Path(tmp) / "data" / "cron_jobs.json").read_text(encoding="utf-8"))
-                names = [j["name"] for j in jobs]
-                self.assertIn("test_scan", names)
-                target = next(j for j in jobs if j["name"] == "test_scan")
-                self.assertIn("decidra.strategy.runner run", target["command"])
+                names = {j["name"] for j in jobs}
+                self.assertIn("decidra_strategy_czsc_resonance", names)
+                self.assertIn("decidra_strategy_fast_strategy", names)
+                self.assertIn("user_own_job", names, "非 decidra_ 前缀 job 不受影响")
+                self.assertIn("decidra_backup", names,
+                              "decidra_ 前缀但非策略前缀的用户 job 不得被删除")
+                self.assertNotIn("decidra_strategy_scan", names)
             finally:
                 if old_env is None:
                     os.environ.pop("OPENHARNESS_CONFIG_DIR", None)
                 else:
                     os.environ["OPENHARNESS_CONFIG_DIR"] = old_env
+
+    def test_invalid_strategy_name_rejected(self):
+        from decidra.tasks.registry import build_jobs
+
+        for bad_name in ("my strategy", "x;rm", "a|b", "czsc\n"):
+            with self.assertRaises(ValueError, msg=f"策略名 {bad_name!r} 应被拒绝"):
+                build_jobs({"strategies": [{"name": bad_name, "enabled": True}]})
 
     def test_invalid_schedule_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -317,7 +473,9 @@ class TestInstallCron(unittest.TestCase):
             os.environ["OPENHARNESS_CONFIG_DIR"] = tmp
             try:
                 with self.assertRaises(ValueError):
-                    install_cron({"cron": {"name": "bad", "schedule": "not-a-cron"}})
+                    install_cron({
+                        "strategies": [{"name": "bad", "schedule": "not-a-cron"}],
+                    })
             finally:
                 if old_env is None:
                     os.environ.pop("OPENHARNESS_CONFIG_DIR", None)
@@ -358,10 +516,56 @@ class TestDisplay(unittest.TestCase):
     def test_format_alert_tolerates_legacy_record(self):
         from decidra.strategy.display import format_alert
 
-        # 旧记录无 id/snapshot 字段也应可渲染
+        # 旧记录无 id/snapshot/caveats 字段也应可渲染
         text = format_alert({"symbol": "X", "action": "BUY", "reason": "r",
                              "dt": "2026-07-13T00:00:00", "bar_dt": ""})
         self.assertIn("▲ BUY", text)
+
+    def test_format_alert_renders_caveats_red(self):
+        from decidra.strategy.display import format_alert
+
+        alert = self._alert_dict("BUY")
+        alert["caveats"] = ["周线笔未形成，方向未获确认"]
+        text = format_alert(alert)
+        self.assertIn("[bold red]⚠ 周线笔未形成，方向未获确认[/]", text)
+        # 无 caveats 时不出现警示行
+        self.assertNotIn("⚠", format_alert(self._alert_dict("BUY")))
+
+    def test_format_alert_includes_stock_name(self):
+        """basicinfo 缓存命中时告警标题显示"代码 名称"。"""
+        from decidra.strategy import display
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "stock_basicinfo_cache.json"
+            cache_path.write_text(json.dumps({
+                "data": {"HK.00700": {"code": "HK.00700", "name": "腾讯控股"}}
+            }), encoding="utf-8")
+            original = display.BASICINFO_CACHE_PATH
+            display.BASICINFO_CACHE_PATH = cache_path
+            display._names_cache = (None, {})
+            try:
+                text = display.format_alert(self._alert_dict("SELL"))
+                self.assertIn("HK.00700 腾讯控股", text)
+                options_line = display._symbol_display("HK.00700")
+                self.assertEqual(options_line, "HK.00700 腾讯控股")
+            finally:
+                display.BASICINFO_CACHE_PATH = original
+                display._names_cache = (None, {})
+
+    def test_format_alert_without_name_cache_degrades(self):
+        """缓存文件不存在或未命中时只显示代码，不报错。"""
+        from decidra.strategy import display
+
+        with tempfile.TemporaryDirectory() as tmp:
+            original = display.BASICINFO_CACHE_PATH
+            display.BASICINFO_CACHE_PATH = Path(tmp) / "missing.json"
+            display._names_cache = (None, {})
+            try:
+                text = display.format_alert(self._alert_dict("SELL"))
+                self.assertIn("[bold]HK.00700[/]", text, "无名称时代码后不应有多余空格")
+            finally:
+                display.BASICINFO_CACHE_PATH = original
+                display._names_cache = (None, {})
 
     def test_build_alert_options(self):
         from decidra.strategy.alerts import save_enrichment
@@ -410,7 +614,8 @@ class TestDisplay(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             lines = build_startup_lines(
-                config={"watchlist": ["HK.00700"], "cron": {"name": "nope"}},
+                config={"watchlist": ["HK.00700"],
+                        "strategies": [{"name": "czsc_resonance", "enabled": True}]},
                 alerts_path=Path(tmp) / "a.jsonl",
                 jobs_path=Path(tmp) / "jobs.json",
                 history_path=Path(tmp) / "hist.jsonl",
@@ -427,11 +632,11 @@ class TestDisplay(unittest.TestCase):
             history_path = Path(tmp) / "hist.jsonl"
             alerts_path = Path(tmp) / "a.jsonl"
             jobs_path.write_text(json.dumps([{
-                "name": "decidra_strategy_scan", "schedule": "*/15 * * * *",
+                "name": "decidra_strategy_czsc_resonance", "schedule": "*/5 * * * *",
                 "enabled": True, "next_run": "2026-07-13T12:45:00+00:00",
             }]), encoding="utf-8")
             history_path.write_text(json.dumps({
-                "name": "decidra_strategy_scan", "status": "success",
+                "name": "decidra_strategy_czsc_resonance", "status": "success",
                 "started_at": "2026-07-13T12:45:01+00:00",
             }) + "\n", encoding="utf-8")
             append_alerts([Alert(dt="2026-07-13T12:45:02", symbol="HK.00700",
@@ -439,11 +644,13 @@ class TestDisplay(unittest.TestCase):
                                  bar_dt="2026-07-13T00:00:00")], alerts_path)
 
             lines = build_startup_lines(
-                config={"watchlist": ["HK.00700"], "cron": {"name": "decidra_strategy_scan"}},
+                config={"watchlist": ["HK.00700"],
+                        "strategies": [{"name": "czsc_resonance", "enabled": True}]},
                 alerts_path=alerts_path, jobs_path=jobs_path, history_path=history_path,
                 enrichments_path=Path(tmp) / "enrich.json",
             )
             text = "\n".join(lines)
+            self.assertIn("czsc_resonance", text)
             self.assertIn("启用", text)
             self.assertIn("success", text)
             self.assertIn("最近告警 1 条", text)

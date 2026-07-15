@@ -19,10 +19,11 @@ from pathlib import Path
 from ..utils.global_vars import (
     DECIDRA_PATH as DECIDRA_HOME,
     PATH_OPENHARNESS_SETTINGS as SETTINGS_PATH,
+    PATH_REPO_ROOT,
 )
 
-# 项目根（decidra 包的父目录），供子进程 PYTHONPATH 导入 decidra。
-PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
+# 项目根（decidra 包的父目录，统一定义于 global_vars），供子进程 PYTHONPATH 导入 decidra。
+PROJECT_ROOT: Path = PATH_REPO_ROOT
 
 
 @dataclass(frozen=True)

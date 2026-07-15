@@ -26,9 +26,6 @@ def ensure_directories() -> Tuple[bool, List[str]]:
         PATH_CONFIG,
         PATH_DATA,
         PATH_LOG,
-        PATH_FILTERS,
-        PATH_STRATEGIES,
-        PATH_FILTER_REPORT
     )
 
     # 需要创建的目录列表
@@ -38,9 +35,6 @@ def ensure_directories() -> Tuple[bool, List[str]]:
         PATH_RUNTIME / 'config',        # 运行时配置
         PATH_DATA,                      # 数据缓存
         PATH_LOG,                       # 日志目录
-        PATH_FILTERS,                   # 过滤器目录
-        PATH_STRATEGIES,                # 策略目录
-        PATH_FILTER_REPORT,             # 筛选报告目录
     ]
 
     created_dirs = []
@@ -70,8 +64,6 @@ def verify_directories() -> Tuple[bool, List[str]]:
         PATH_RUNTIME,
         PATH_DATA,
         PATH_LOG,
-        PATH_FILTERS,
-        PATH_STRATEGIES,
     )
 
     required_dirs = [
@@ -79,8 +71,6 @@ def verify_directories() -> Tuple[bool, List[str]]:
         PATH_RUNTIME,
         PATH_DATA,
         PATH_LOG,
-        PATH_FILTERS,
-        PATH_STRATEGIES,
     ]
 
     missing_dirs = []

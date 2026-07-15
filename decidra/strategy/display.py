@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from ..utils.global_vars import PATH_OPENHARNESS_DATA
+from ..utils.global_vars import PATH_DATA, PATH_OPENHARNESS_DATA
 from .alerts import ALERTS_PATH, load_enrichments, read_recent_alerts
 from .config import load_config
 
@@ -17,11 +17,50 @@ from .config import load_config
 OPENHARNESS_DATA_DIR: Path = PATH_OPENHARNESS_DATA
 CRON_JOBS_PATH: Path = OPENHARNESS_DATA_DIR / "cron_jobs.json"
 CRON_HISTORY_PATH: Path = OPENHARNESS_DATA_DIR / "cron_history.jsonl"
+# monitor 维护的股票基础信息缓存（与 monitor/main/data.py 的 BASICINFO_CACHE_FILE 同一文件）
+BASICINFO_CACHE_PATH: Path = PATH_DATA / "stock_basicinfo_cache.json"
 
 _ACTION_MARKUP = {
     "BUY": "[bold green]▲ BUY[/]",
     "SELL": "[bold red]▼ SELL[/]",
 }
+
+# _stock_name 的进程内缓存：((路径, 文件 mtime), code → name)
+_names_cache: Tuple[Optional[tuple], dict] = (None, {})
+
+
+def _stock_name(code: str, cache_path: Optional[Path] = None) -> str:
+    """从 monitor 的 basicinfo 缓存查股票名称，查不到返回空串。
+
+    按（路径, mtime）做进程内缓存，避免每条告警重读整个缓存文件；文件
+    不存在或损坏时静默退化（告警只显示代码）。cache_path 缺省用模块级
+    BASICINFO_CACHE_PATH（测试可改指临时文件）。
+    """
+    global _names_cache
+    cache_path = cache_path or BASICINFO_CACHE_PATH
+    try:
+        cache_key = (str(cache_path), cache_path.stat().st_mtime)
+    except OSError:
+        return ""
+    if _names_cache[0] != cache_key:
+        try:
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            entries = data.get("data", {}) if isinstance(data, dict) else {}
+            names = {
+                c: str(info.get("name", ""))
+                for c, info in entries.items() if isinstance(info, dict)
+            }
+        except (json.JSONDecodeError, OSError):
+            names = {}
+        _names_cache = (cache_key, names)
+    return _names_cache[1].get(code, "")
+
+
+def _symbol_display(symbol) -> str:
+    """代码 + 名称（如"HK.00700 腾讯控股"），名称查不到时只显代码。"""
+    code = str(symbol or "")
+    name = _stock_name(code)
+    return f"{code} {name}" if name else code
 
 
 def _fmt_dt(value, length: int = 19) -> str:
@@ -48,9 +87,13 @@ def format_alert(alert: dict, enrichment: Optional[dict] = None) -> str:
 
     details = [
         f"理由: {alert.get('reason', '')}",
-        f"周线 {weekly} ｜ 共振 {cross} ｜ 日线买卖点 {daily_part}"
-        f" ｜ 策略 [dim]{alert.get('strategy', '')}[/]",
     ]
+    caveats = alert.get("caveats") or []
+    details.extend(f"[bold red]⚠ {caveat}[/]" for caveat in caveats)
+    details.append(
+        f"周线 {weekly} ｜ 共振 {cross} ｜ 日线买卖点 {daily_part}"
+        f" ｜ 策略 [dim]{alert.get('strategy', '')}[/]"
+    )
     if enrichment:
         conclusion = str(enrichment.get("conclusion", "?"))
         color = _CONCLUSION_COLORS.get(conclusion, "white")
@@ -60,7 +103,7 @@ def format_alert(alert: dict, enrichment: Optional[dict] = None) -> str:
         )
 
     lines = [
-        f"[bold yellow]📢 策略告警[/] {id_part}{action_markup} [bold]{alert.get('symbol')}[/]"
+        f"[bold yellow]📢 策略告警[/] {id_part}{action_markup} [bold]{_symbol_display(alert.get('symbol'))}[/]"
         f"{close_part}  [dim]{_fmt_dt(alert.get('dt'))}（K线 {_fmt_dt(alert.get('bar_dt'), 10)}）[/]",
     ]
     for i, detail in enumerate(details):
@@ -103,7 +146,7 @@ def build_alert_options(
         close_part = f" @{last_close}" if last_close is not None else ""
         options.pop(alert_id, None)  # 同 id 取最新（位置也随之更新）
         options[alert_id] = (
-            f"[dim]#{alert_id}[/] {action_markup} [bold]{alert.get('symbol')}[/]{close_part}"
+            f"[dim]#{alert_id}[/] {action_markup} [bold]{_symbol_display(alert.get('symbol'))}[/]{close_part}"
             f"  [dim]{_fmt_dt(alert.get('dt'), 16)}[/]  {status}"
         )
     items = list(options.items())
@@ -132,23 +175,25 @@ def build_enrich_prompt(alert: dict) -> str:
     )
 
 
-def _load_cron_job(name: str, jobs_path: Path) -> Optional[dict]:
+def _load_cron_jobs_by_name(jobs_path: Path) -> dict:
+    """一次读入 cron 注册表，name → job（供多策略循环查询，避免逐策略重读文件）。"""
     if not jobs_path.exists():
-        return None
+        return {}
     try:
         jobs = json.loads(jobs_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
-        return None
-    for job in jobs if isinstance(jobs, list) else []:
-        if job.get("name") == name:
-            return job
-    return None
+        return {}
+    if not isinstance(jobs, list):
+        return {}
+    return {job.get("name"): job for job in jobs if isinstance(job, dict)}
 
 
-def _last_history_entry(name: str, history_path: Path) -> Optional[dict]:
+def _last_history_entries(names, history_path: Path) -> dict:
+    """单趟扫描执行历史，取每个目标 job 的最后一条记录（history 无轮转，只扫一遍）。"""
     if not history_path.exists():
-        return None
-    last = None
+        return {}
+    wanted = set(names)
+    last: dict = {}
     for line in history_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
@@ -157,8 +202,8 @@ def _last_history_entry(name: str, history_path: Path) -> Optional[dict]:
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if entry.get("name") == name:
-            last = entry
+        if entry.get("name") in wanted:
+            last[entry["name"]] = entry
     return last
 
 
@@ -170,28 +215,44 @@ def build_startup_lines(
     history_path: Path = CRON_HISTORY_PATH,
     enrichments_path: Optional[Path] = None,
 ) -> List[str]:
-    """monitor 启动时的策略概况汇总 + 最近告警回放。"""
-    config = config or load_config()
-    cron_name = (config.get("cron") or {}).get("name", "decidra_strategy_scan")
-    watchlist = config.get("watchlist", [])
+    """monitor 启动时的策略概况汇总 + 最近告警回放。
 
-    job = _load_cron_job(cron_name, jobs_path)
-    if job is None:
-        sched = "[yellow]未注册（python -m decidra.strategy.runner install-cron）[/]"
-    else:
-        state = "[green]启用[/]" if job.get("enabled", True) else "[red]停用[/]"
-        sched = f"{state} [{job.get('schedule')}] 下次 {_fmt_dt(job.get('next_run'), 16)} UTC"
+    每个启用策略对应一个独立 cron job（decidra.tasks 注册表），逐个汇报
+    调度状态与上次扫描结果。
+    """
+    config = config or load_config()
+    watchlist = config.get("watchlist", [])
+    enabled = [
+        s.get("name") for s in config.get("strategies", [])
+        if s.get("enabled", True) and s.get("name")
+    ]
 
     pool = ", ".join(watchlist[:3]) + ("…" if len(watchlist) > 3 else "")
     lines = [
-        f"[bold cyan]── 策略监控 ──[/] 股票池 {len(watchlist)} 只（{pool}） ｜ 调度 {sched}",
+        f"[bold cyan]── 策略监控 ──[/] 股票池 {len(watchlist)} 只（{pool}） ｜ 启用策略 {len(enabled)} 个",
     ]
 
-    hist = _last_history_entry(cron_name, history_path)
-    if hist:
-        status = str(hist.get("status", "?"))
-        color = "green" if status == "success" else "red"
-        lines.append(f"   上次扫描 {_fmt_dt(hist.get('started_at'))} [{color}]{status}[/]")
+    # 延迟导入避免 display（可能被面板加载）在导入期拉起 tasks 包
+    from ..tasks.registry import strategy_job_name
+
+    job_names = {strategy: strategy_job_name(strategy) for strategy in enabled}
+    jobs_by_name = _load_cron_jobs_by_name(jobs_path)
+    history_by_name = _last_history_entries(job_names.values(), history_path)
+
+    for strategy, job_name in job_names.items():
+        job = jobs_by_name.get(job_name)
+        if job is None:
+            sched = "[yellow]未注册（python -m decidra.tasks install）[/]"
+        else:
+            state = "[green]启用[/]" if job.get("enabled", True) else "[red]停用[/]"
+            sched = f"{state} [{job.get('schedule')}] 下次 {_fmt_dt(job.get('next_run'), 16)} UTC"
+        line = f"   {strategy}: {sched}"
+        hist = history_by_name.get(job_name)
+        if hist:
+            status = str(hist.get("status", "?"))
+            color = "green" if status == "success" else "red"
+            line += f" ｜ 上次 {_fmt_dt(hist.get('started_at'))} [{color}]{status}[/]"
+        lines.append(line)
 
     recent = read_recent_alerts(recent_n, alerts_path)
     if recent:

@@ -21,7 +21,6 @@ tushare
 akshare
 #decidra
 jsonlite
-humanize
 candlestick-chart==3.1.0
 yfinance==0.2.64
 psutil

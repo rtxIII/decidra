@@ -12,6 +12,14 @@ from textual.validation import Function
 
 from ...monitor.widgets.window_dialog import show_confirm_dialog
 from ...monitor.widgets.auto_dialog import show_auto_input_dialog
+from ...monitor.widgets.stock_action_dialog import (
+    ACTION_ANALYSIS,
+    ACTION_DELETE,
+    ACTION_STRATEGY_ADD,
+    ACTION_STRATEGY_REMOVE,
+    StockActionDialog,
+    build_stock_menu_options,
+)
 from ...utils.global_vars import get_logger
 from .data import TRADING_MODE_SIMULATION, TRADING_MODE_REAL
 
@@ -67,6 +75,30 @@ class EventHandler:
             self.app.action_quit()
         # 其他按键正常处理，不退出程序
     
+    async def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """表格光标移动（键盘方向键/鼠标）时同步 app_core 光标状态。
+
+        表格持真实焦点时方向键由 DataTable 自带绑定消费，app_core 光标不会经
+        w/s 全局动作更新；回车菜单/买入/改单等按 app_core 光标取行，须在此收敛
+        （否则视觉光标与动作目标脱节）。update_*_cursor 的 move_cursor 也会触发
+        本事件，同值回写幂等无环。
+        """
+        try:
+            row_index = event.cursor_row
+            table_id = event.data_table.id
+            if table_id == "stock_table":
+                self.app_core.current_stock_cursor = row_index
+                if 0 <= row_index < len(self.app_core.monitored_stocks):
+                    self.app_core.current_stock_code = self.app_core.monitored_stocks[row_index]
+            elif table_id == "group_table":
+                self.app_core.current_group_cursor = row_index
+            elif table_id == "position_table":
+                self.app_core.current_position_cursor = row_index
+            elif table_id == "orders_table":
+                self.app_core.current_order_cursor = row_index
+        except Exception as e:
+            self.logger.error(f"同步表格光标失败: {e}")
+
     async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """处理表格行选择事件"""
         try:
@@ -291,7 +323,70 @@ class EventHandler:
             ui_manager = getattr(self.app_core.app, 'ui_manager', None)
             if ui_manager and ui_manager.info_panel:
                 await ui_manager.info_panel.log_info(f"删除股票失败: {e}", "删除股票")
-    
+
+    async def action_stock_menu(self) -> None:
+        """股票操作菜单动作（股票表激活时按回车触发）"""
+        # 使用 run_worker 以满足 push_screen_wait 的 worker 上下文要求
+        self.app.run_worker(self._stock_menu_worker, exclusive=True)
+
+    async def _stock_menu_worker(self) -> None:
+        """弹出光标股票的操作菜单并分发所选动作"""
+        try:
+            if not self.app_core.monitored_stocks:
+                ui_manager = getattr(self.app_core.app, 'ui_manager', None)
+                if ui_manager and ui_manager.info_panel:
+                    await ui_manager.info_panel.log_info("监控列表为空，无可操作股票", "股票菜单")
+                return
+            if not (0 <= self.app_core.current_stock_cursor < len(self.app_core.monitored_stocks)):
+                return
+            stock_code = self.app_core.monitored_stocks[self.app_core.current_stock_cursor]
+            ui_manager = getattr(self.app_core.app, 'ui_manager', None)
+            in_watchlist = bool(ui_manager and stock_code in ui_manager.strategy_watchlist)
+            display_name = (
+                ui_manager._get_stock_display_name(stock_code, stock_code)
+                if ui_manager else stock_code
+            )
+
+            options = build_stock_menu_options(stock_code, in_watchlist)
+            action = await self.app.push_screen_wait(
+                StockActionDialog(stock_code, display_name, options)
+            )
+
+            if action == ACTION_ANALYSIS:
+                await self.create_stock_analysis_tab()
+            elif action == ACTION_DELETE:
+                # 直接 await（不经 action_delete_stock 再起 exclusive worker，
+                # 避免同组 exclusive 互相取消）
+                await self._delete_stock_worker()
+            elif action in (ACTION_STRATEGY_ADD, ACTION_STRATEGY_REMOVE):
+                await self._toggle_strategy_watchlist(
+                    stock_code, action == ACTION_STRATEGY_ADD
+                )
+        except Exception as e:
+            self.logger.error(f"股票操作菜单失败: {e}")
+
+    async def _toggle_strategy_watchlist(self, stock_code: str, add: bool) -> None:
+        """将股票加入/移出策略 watchlist（写 config.json 并即时刷新 ▶ 标记）"""
+        ui_manager = getattr(self.app_core.app, 'ui_manager', None)
+        try:
+            # 延迟导入：strategy 包连带依赖 openharness，避免模块导入期耦合
+            from ...strategy.config import update_watchlist
+            new_watchlist = update_watchlist(stock_code, add)
+
+            if ui_manager:
+                # 用写盘后的权威列表整集重同步，外部改动过的其他股票标记一并收敛
+                await ui_manager.apply_strategy_watchlist(set(new_watchlist))
+                if ui_manager.info_panel:
+                    verb = "加入" if add else "移出"
+                    await ui_manager.info_panel.log_info(
+                        f"股票 {stock_code} 已{verb}策略监控", "策略监控"
+                    )
+            self.logger.info(f"策略 watchlist 更新: {stock_code} add={add}")
+        except Exception as e:
+            self.logger.error(f"更新策略 watchlist 失败: {e}")
+            if ui_manager and ui_manager.info_panel:
+                await ui_manager.info_panel.log_info(f"更新策略监控失败: {e}", "策略监控")
+
     async def action_refresh(self) -> None:
         """手动刷新动作"""
         self.logger.info("开始手动刷新数据...")
@@ -614,8 +709,8 @@ class EventHandler:
     async def action_select_group(self) -> None:
         """空格键处理：根据当前活跃表格执行不同操作"""
         if self.app_core.active_table == "stock":
-            # 当前在股票表格：为选中股票创建分析tab
-            await self.create_stock_analysis_tab()
+            # 当前在股票表格：弹出股票操作菜单（K线分析/删除/策略监控切换）
+            await self.action_stock_menu()
         elif self.app_core.active_table == "group":
             # 当前在分组表格：选择分组（原有逻辑）
             await self.select_current_group()

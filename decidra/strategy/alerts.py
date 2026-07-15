@@ -1,8 +1,8 @@
 """策略告警：jsonl 落盘、增量读取与信号去重状态。
 
 告警经 ``alerts.jsonl`` 追加写传递给 monitor（与 cron 基础设施相同的文件通信
-模式）；去重状态按 (symbol, strategy, action) 记录已告警的 K 线时间，
-同一根 K 线只告警一次。
+模式）；去重状态按 (symbol, strategy, action) 记录已告警的 K 线时间与确认态，
+同一根 K 线只告警一次，例外是未确认（带 caveats）→ 已确认的升级可再告警一次。
 
 并发安全：写路径（append_alerts / DedupeState.save / save_enrichment）统一经
 openharness 的 exclusive_file_lock + atomic_write_text 序列化（cron 触发的
@@ -47,6 +47,8 @@ class Alert:
     reason: str
     bar_dt: str            # 触发信号的 K 线时间（ISO，去重锚点）
     snapshot: Dict[str, Any] = field(default_factory=dict)
+    # 风险警示（如"周线未确认"），非空表示低置信告警，展示层红字渲染
+    caveats: List[str] = field(default_factory=list)
     # 短码 id，供终端展示与人工引用（如"研判 #a1b2c3d4"）
     id: str = field(default_factory=lambda: uuid4().hex[:8])
 
@@ -158,7 +160,14 @@ def save_enrichment(alert_id: str, enrichment: dict, path: Optional[Path] = None
 
 
 class DedupeState:
-    """信号去重状态：(symbol, strategy, action) → 已告警的 bar_dt。"""
+    """信号去重状态：(symbol, strategy, action) → 已告警的 bar_dt 与确认态。
+
+    值格式 ``bar_dt`` （已确认，兼容旧状态文件）或 ``bar_dt|unconfirmed``
+    （带 caveats 的低置信告警）；同一根 K 线上未确认 → 已确认视为新事件，
+    允许再告警一次（"转正"），反向降级不再告警。
+    """
+
+    _UNCONFIRMED_SUFFIX = "|unconfirmed"
 
     def __init__(self, path: Path = DEDUPE_STATE_PATH):
         self.path = path
@@ -176,12 +185,33 @@ class DedupeState:
     def key(symbol: str, strategy: str, action: str) -> str:
         return f"{symbol}|{strategy}|{action}"
 
-    def should_fire(self, symbol: str, strategy: str, action: str, bar_dt: str) -> bool:
-        """同一 (symbol, strategy, action) 在同一根 K 线上只告警一次。"""
-        return self._state.get(self.key(symbol, strategy, action)) != bar_dt
+    @classmethod
+    def _parse(cls, entry: str) -> Tuple[str, bool]:
+        """状态值 → (bar_dt, confirmed)；旧格式纯 bar_dt 视为已确认。"""
+        if entry.endswith(cls._UNCONFIRMED_SUFFIX):
+            return entry[: -len(cls._UNCONFIRMED_SUFFIX)], False
+        return entry, True
 
-    def mark(self, symbol: str, strategy: str, action: str, bar_dt: str) -> None:
-        self._state[self.key(symbol, strategy, action)] = bar_dt
+    def should_fire(
+        self, symbol: str, strategy: str, action: str, bar_dt: str,
+        confirmed: bool = True,
+    ) -> bool:
+        """同一 (symbol, strategy, action) 在同一根 K 线上只告警一次；
+        例外：此前为未确认告警、本次已确认时放行（确认升级）。"""
+        entry = self._state.get(self.key(symbol, strategy, action))
+        if entry is None:
+            return True
+        last_bar_dt, last_confirmed = self._parse(entry)
+        if last_bar_dt != bar_dt:
+            return True
+        return confirmed and not last_confirmed
+
+    def mark(
+        self, symbol: str, strategy: str, action: str, bar_dt: str,
+        confirmed: bool = True,
+    ) -> None:
+        value = bar_dt if confirmed else bar_dt + self._UNCONFIRMED_SUFFIX
+        self._state[self.key(symbol, strategy, action)] = value
 
     def save(self) -> None:
         """锁内合并盘上最新状态后原子写回（并发扫描互不丢更新）。"""

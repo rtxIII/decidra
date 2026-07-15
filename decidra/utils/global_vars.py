@@ -25,10 +25,6 @@ PATH_DATA = PATH_RUNTIME / 'data'
 PATH_DATABASE = PATH_RUNTIME / 'database'  # Obsoleted
 PATH_LOG = PATH_RUNTIME / 'log'
 
-PATH_FILTERS = PATH / 'filters'
-PATH_STRATEGIES = PATH / 'strategies'
-PATH_FILTER_REPORT = PATH / 'stock_filter_report'
-
 # ============================================================================
 # OpenHarness 集成与策略模块路径（统一定义，勿在各模块重复硬编码）
 # 始终位于用户目录 ~/.decidra，不随 DECIDRA_DEV_MODE 切换：
@@ -40,6 +36,31 @@ PATH_OPENHARNESS_SETTINGS = PATH_OPENHARNESS / 'settings.json'
 PATH_OHMO_WORKSPACE = DECIDRA_PATH / 'ohmo'
 PATH_STRATEGY_CONFIG = DECIDRA_PATH / 'strategy'
 PATH_STRATEGY_RUNTIME = DECIDRA_PATH / '.runtime' / 'strategy'
+
+# decidra 包的父目录（开发时=仓库根，安装后=site-packages），供子进程以
+# `python -m decidra...` 启动时作 cwd / PYTHONPATH，勿在各模块重复 parents[N] 硬算。
+PATH_REPO_ROOT = DEV_PATH.parent
+
+
+def ensure_openharness_env() -> Path:
+    """openharness 配置目录引导的统一入口（幂等）。
+
+    设置 ``OPENHARNESS_CONFIG_DIR`` 环境变量缺省值并尽力确保生效目录存在，
+    须在任何 openharness 导入使用前调用；勿在各模块重复 setdefault。
+
+    mkdir 失败（如用户 env 指向只读位置）降级为告警不抛出：调用点多在
+    monitor 启动/模块导入链上，目录问题应表现为后续 openharness 操作的
+    显式错误，而非导入期崩溃。
+
+    Returns:
+        生效的 openharness 配置目录。
+    """
+    config_dir = Path(os.environ.setdefault("OPENHARNESS_CONFIG_DIR", str(PATH_OPENHARNESS)))
+    try:
+        config_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        get_logger(__name__).warning(f"openharness 配置目录创建失败（{config_dir}）: {exc}")
+    return config_dir
 
 # 常量定义
 DATETIME_FORMAT_DW = '%Y-%m-%d'

@@ -139,9 +139,8 @@ Decidra/
 │   │   └── ui.py                    # 主界面入口
 │   ├── 📁 modules/                  # 功能模块
 │   │   ├── 📁 ai/                   # AI分析模块
-│   │   └── yahoo_data.py            # Yahoo Finance接口
-│   ├── 📁 filters/                  # 交易过滤器
-│   ├── 📁 strategies/               # 交易策略
+│   ├── 📁 strategy/                 # czsc 策略与告警管道
+│   ├── 📁 tasks/                    # cron 任务注册表
 │   ├── 📁 utils/                    # 工具函数
 │   ├── 📁 tests/                    # 测试用例 (145+ 文件)
 │   └── cli.py                       # 命令行入口

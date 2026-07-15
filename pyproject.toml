@@ -61,7 +61,6 @@ dependencies = [
     # Data processing and analysis
     "funcat3==1.1.8",
     "jsonlite",
-    "humanize",
     "candlestick-chart==3.1.0",
     "psutil",
     "pyyaml",

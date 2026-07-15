@@ -5,10 +5,15 @@ UIManager - UI组件和界面状态管理模块
 """
 
 import asyncio
+from pathlib import Path
 from typing import Optional, Any
 
 from textual.widgets import DataTable, Static
 from ...utils.global_vars import get_logger
+
+# 策略股票标记：红▶（Rich 单元格宽 1）+ 黄色代码；未标记行用等宽空格占位保持代码对齐
+STRATEGY_MARK_PREFIX = "[bold red]▶[/bold red]"
+STRATEGY_MARK_PLACEHOLDER = " "
 
 
 class UIManager:
@@ -39,6 +44,11 @@ class UIManager:
         
         # 缓存上次的单元格值，用于检测变化
         self.last_cell_values: dict = {}
+
+        # 策略 watchlist（启动/分组切换时重读），用于监控列表打标
+        self.strategy_watchlist: set = set()
+        # 策略配置路径覆盖（None 走默认 ~/.decidra/strategy/config.json，测试注入用）
+        self.strategy_config_path: Optional[Path] = None
         
         # 状态栏组件引用
         self.connection_status: Optional[Static] = None
@@ -192,13 +202,16 @@ class UIManager:
     async def load_default_stocks(self) -> None:
         """加载默认股票到表格"""
         if self.stock_table:
+            # 重读策略 watchlist（运行中改配置需切分组或重启生效）
+            self.strategy_watchlist = self._load_strategy_watchlist()
+
             # 清空现有数据
             self.stock_table.clear()
-            
+
             # 添加股票行
             for stock_code in self.app_core.monitored_stocks:
                 self.stock_table.add_row(
-                    stock_code,
+                    self._format_stock_code_cell(stock_code),
                     stock_code,
                     "0.00",
                     "0.00%",
@@ -218,6 +231,50 @@ class UIManager:
         
         # 初始化表格焦点状态
         await self.update_table_focus()
+
+    def _load_strategy_watchlist(self) -> set:
+        """读取策略配置 watchlist 供监控列表打标；失败返回空集，不影响监控主流程。"""
+        try:
+            # 延迟导入：strategy 包连带 alerts 依赖 openharness，避免面板导入期耦合
+            from ...strategy.config import clean_watchlist, load_config
+            if self.strategy_config_path is not None:
+                strategy_config = load_config(self.strategy_config_path)
+            else:
+                strategy_config = load_config()
+            return set(clean_watchlist(strategy_config.get("watchlist", [])))
+        except Exception as e:
+            self.logger.warning(f"读取策略 watchlist 失败，跳过策略打标: {e}")
+            return set()
+
+    def _format_stock_code_cell(self, stock_code: str) -> str:
+        """代码列展示值：策略股加红▶+黄色代码，普通股加空格占位保持对齐。"""
+        if stock_code in self.strategy_watchlist:
+            return f"{STRATEGY_MARK_PREFIX}[yellow]{stock_code}[/yellow]"
+        return f"{STRATEGY_MARK_PLACEHOLDER}{stock_code}"
+
+    async def apply_strategy_watchlist(self, watchlist: set) -> None:
+        """整集应用策略 watchlist 并刷新全部行的 ▶ 标记。
+
+        用于写盘后的权威列表回灌（update_watchlist 返回值），外部改动过的
+        其他股票标记一并收敛，不整表重载。
+
+        Args:
+            watchlist: 权威 watchlist 集合。
+        """
+        self.strategy_watchlist = set(watchlist)
+        for stock_code in getattr(self.app_core, "monitored_stocks", []):
+            self._refresh_code_cell(stock_code)
+
+    def _refresh_code_cell(self, stock_code: str) -> None:
+        """按当前 watchlist 重绘单只股票的代码格（行不存在时仅告警）。"""
+        if not self.stock_table:
+            return
+        try:
+            self.stock_table.update_cell(
+                stock_code, "code", self._format_stock_code_cell(stock_code)
+            )
+        except Exception as e:
+            self.logger.warning(f"刷新策略标记失败: {stock_code}, {e}")
 
     def _get_stock_display_name(self, stock_code: str, fallback_name: str) -> str:
         """优先使用股票基础信息缓存中的展示名称。"""
@@ -699,10 +756,10 @@ class UIManager:
 
         if self.stock_table:
             self.stock_table.add_row(
-                stock_code,
+                self._format_stock_code_cell(stock_code),
                 stock_code,
                 "0.00",
-                "0.00%", 
+                "0.00%",
                 "0",
                 "未更新",
                 key=stock_code

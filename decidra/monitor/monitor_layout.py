@@ -17,7 +17,7 @@ import asyncio
 from ..utils.global_vars import get_logger
 
 STOCK_COLUMNS = {
-            "code": {"label": "代码", "width": 10},
+            "code": {"label": "代码", "width": 12},
             "name": {"label": "名称", "width": 10},
             "price": {"label": "价格", "width": 10},
             "change": {"label": "涨跌", "width": 10},
@@ -92,7 +92,7 @@ class StockListPanel(Container):
         # 快捷键提示区域
         with Container(classes="button-bar"):
             yield Static(
-                "[bold green]N[/bold green] 添加  [bold red]K[/bold red] 删除  [bold blue]O[/bold blue] 订单  [bold magenta]T[/bold magenta] 切换模式  [bold yellow]Space[/bold yellow] 选择  [bold white]I[/bold white] AI",
+                "[bold green]N[/bold green] 添加  [bold red]K[/bold red] 删除  [bold yellow]Space[/bold yellow] 菜单  [bold blue]O[/bold blue] 订单  [bold magenta]T[/bold magenta] 切换模式  [bold white]I[/bold white] AI",
                 id="hotkey_hints"
             )
 
@@ -1091,7 +1091,10 @@ class MonitorLayout(Container):
         Binding("t", "toggle_trading_mode", "切换交易模式"),
         Binding("escape", "go_back", "返回"),
         Binding("tab", "switch_tab", "切换标签"),
-        Binding("enter", "enter_analysis", "进入分析"),
+        # priority：DataTable 自带 enter=select_cursor 绑定，表格持焦（启动自动聚焦）
+        # 时会先消费回车；须优先级绑定才能进入按 active_table 的分流。终端输入框
+        # 场景由 _TERMINAL_GATED_ACTIONS + check_action 门控，不受影响。
+        Binding("enter", "enter_analysis", "进入分析", priority=True),
         Binding("ctrl+c", "quit", "强制退出", priority=True),
         Binding("i", "open_ai_dialog", "AI问答", priority=True)
     ]
@@ -1175,7 +1178,7 @@ class MonitorLayout(Container):
         """动态门控：终端输入框持焦时禁用受控单键动作。
 
         终端输入框获得焦点时，用户在打字（含 q/n/i 等单键），此时对全局单键动作
-        返回 False 以禁用，使按键流入输入框；失焦时返回 None 恢复正常。ctrl+c
+        返回 False 以禁用，使按键流入输入框；失焦时返回 True 正常启用。ctrl+c
         等强制退出不在门控集内，始终可用。
 
         Args:
@@ -1183,11 +1186,13 @@ class MonitorLayout(Container):
             parameters: 动作参数。
 
         Returns:
-            ``False`` 禁用该动作；``None`` 表示不干预（正常启用）。
+            ``False`` 禁用该动作；``True`` 正常启用。注意 Textual 的
+            ``run_action`` 对 check_action 返回值做真值判断，返回 ``None``
+            同样会拒绝分发（None 语义是"禁用但在 footer 显示"，不是"不干预"）。
         """
         if action in self._TERMINAL_GATED_ACTIONS and self._is_terminal_input_focused():
             return False
-        return None
+        return True
 
     async def action_delete_stock(self) -> None:
         """删除股票动作 - 委托给主应用处理"""
@@ -1209,14 +1214,16 @@ class MonitorLayout(Container):
             await self.app.action_help()
 
     async def action_enter_analysis(self) -> None:
-        """进入分析动作 - 持仓表激活时改为买入(加仓)，否则委托主应用进入分析"""
+        """回车动作 - 按激活表格分流：持仓=买入(加仓)，股票=操作菜单，其余表格无回车行为"""
         app_core = getattr(self.app, 'app_core', None)
-        if app_core is not None and getattr(app_core, 'active_table', None) == "position":
+        active_table = getattr(app_core, 'active_table', None) if app_core is not None else None
+        if active_table == "position":
             if hasattr(self.app, 'action_buy_selected'):
                 await self.app.action_buy_selected()
             return
-        if hasattr(self.app, 'action_enter_analysis'):
-            await self.app.action_enter_analysis()
+        if active_table == "stock":
+            if hasattr(self.app, 'action_stock_menu'):
+                await self.app.action_stock_menu()
 
     async def action_open_ai_dialog(self) -> None:
         """打开AI问答对话框 - 委托给主应用处理"""

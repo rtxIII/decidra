@@ -161,3 +161,4 @@ decidra/tests/*
 !decidra/tests/test_strategy_runner.py
 !decidra/tests/test_terminal_cron_daemon.py
 !decidra/tests/test_terminal_enrich_dialog.py
+!decidra/tests/test_stock_action_dialog.py

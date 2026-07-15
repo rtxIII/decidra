@@ -162,3 +162,7 @@ decidra/tests/*
 !decidra/tests/test_terminal_cron_daemon.py
 !decidra/tests/test_terminal_enrich_dialog.py
 !decidra/tests/test_stock_action_dialog.py
+
+# 独立仓库/外部项目副本
+newsnow/
+ai-berkshire-main/

@@ -1,0 +1,74 @@
+name: Create GitHub Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - pyproject.toml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check project version change
+        id: version
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          CURRENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          previous_version="$(
+            git show "${BEFORE_SHA}:pyproject.toml" \
+              | grep -m1 -E '^version *= *"' \
+              | sed -E 's/.*"([^"]+)".*/\1/'
+          )"
+          current_version="$(
+            git show "${CURRENT_SHA}:pyproject.toml" \
+              | grep -m1 -E '^version *= *"' \
+              | sed -E 's/.*"([^"]+)".*/\1/'
+          )"
+
+          [[ -n "$previous_version" ]] || {
+            echo "Unable to read the previous project version" >&2
+            exit 1
+          }
+          [[ -n "$current_version" ]] || {
+            echo "Unable to read the current project version" >&2
+            exit 1
+          }
+
+          if [[ "$previous_version" == "$current_version" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Version changed: $previous_version -> $current_version"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Configure Git identity
+        if: steps.version.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Run release script
+        if: steps.version.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./release.sh

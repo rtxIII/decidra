@@ -55,6 +55,7 @@ NEWS_RADAR_SENTIMENTS = frozenset(
 NEWS_RADAR_LEVELS = frozenset({"high", "medium", "low"})
 NEWS_RADAR_RELATED_STOCK_LIMIT = 10
 NEWS_RADAR_REASON_CHARACTER_LIMIT = 160
+NEWS_RADAR_ERROR_EVENT_KEY_CHARACTER_LIMIT = 256
 NEWS_RADAR_FORBIDDEN_REASON_PATTERNS = (
     r"(加入|纳入|移入|调入|移出|调出|删除).{0,12}(股票池|自选股)",
     r"(股票池|自选股).{0,12}(移出|调出|删除)",
@@ -122,8 +123,17 @@ class _InvalidNewsRadarState(ValueError):
 
 
 class _InvalidNewsRadarLLMResponse(ValueError):
-    def __init__(self, code: str):
+    def __init__(
+        self,
+        code: str,
+        *,
+        detail: str | None = None,
+        event_key: str | None = None,
+    ):
+        assert event_key is None or detail is not None
         self.code = code
+        self.detail = detail
+        self.event_key = event_key
         super().__init__(code)
 
 
@@ -285,6 +295,8 @@ class NewsRadarAnalysisResult:
     error_code: str | None
     input_characters: int
     usage: NewsRadarLLMUsage
+    error_detail: str | None = None
+    error_event_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -456,12 +468,24 @@ def _parse_llm_events(
         ):
             raise _InvalidNewsRadarLLMResponse("invalid_event_schema")
         event_key = raw_event["event_key"]
-        if (
-            not isinstance(event_key, str)
-            or event_key not in items_by_event_key
-            or event_key in seen_event_keys
-        ):
-            raise _InvalidNewsRadarLLMResponse("invalid_event_key")
+        if not isinstance(event_key, str):
+            raise _InvalidNewsRadarLLMResponse(
+                "invalid_event_key",
+                detail="invalid_type",
+                event_key=_format_error_event_key(event_key),
+            )
+        if event_key not in items_by_event_key:
+            raise _InvalidNewsRadarLLMResponse(
+                "invalid_event_key",
+                detail="not_in_batch",
+                event_key=_format_error_event_key(event_key),
+            )
+        if event_key in seen_event_keys:
+            raise _InvalidNewsRadarLLMResponse(
+                "invalid_event_key",
+                detail="duplicate",
+                event_key=_format_error_event_key(event_key),
+            )
         relation_type = raw_event["relation_type"]
         if (
             not isinstance(relation_type, str)
@@ -551,6 +575,38 @@ def _llm_usage_from_response(response: Any) -> NewsRadarLLMUsage:
     )
 
 
+def _format_error_event_key(event_key: Any) -> str:
+    if isinstance(event_key, str):
+        serialized_event_key = json.dumps(
+            event_key,
+            ensure_ascii=False,
+        )[1:-1]
+    else:
+        serialized_event_key = json.dumps(
+            event_key,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    safe_event_key = "".join(
+        character
+        if character.isprintable()
+        else character.encode("unicode_escape").decode("ascii")
+        for character in serialized_event_key
+    )
+    truncation_suffix = "..."
+    assert NEWS_RADAR_ERROR_EVENT_KEY_CHARACTER_LIMIT > len(truncation_suffix)
+    if len(safe_event_key) <= NEWS_RADAR_ERROR_EVENT_KEY_CHARACTER_LIMIT:
+        return safe_event_key
+    return (
+        safe_event_key[
+            :NEWS_RADAR_ERROR_EVENT_KEY_CHARACTER_LIMIT
+            - len(truncation_suffix)
+        ]
+        + truncation_suffix
+    )
+
+
 def _news_radar_event_sort_key(
     event: NewsRadarEvent,
 ) -> Tuple[int, int, int, float, str]:
@@ -608,6 +664,8 @@ def _llm_error_result(
     error_code: str,
     input_characters: int,
     usage: NewsRadarLLMUsage,
+    error_detail: str | None = None,
+    error_event_key: str | None = None,
     count_item_failure: bool = True,
 ) -> NewsRadarAnalysisResult:
     failed_state, item_processing_failed = _state_after_llm_failure(
@@ -627,6 +685,8 @@ def _llm_error_result(
         ),
         input_characters=input_characters,
         usage=usage,
+        error_detail=error_detail,
+        error_event_key=error_event_key,
     )
 
 
@@ -747,6 +807,8 @@ async def analyze_news_radar_batch(
             error_code=exc.code,
             input_characters=len(user_content),
             usage=usage,
+            error_detail=exc.detail,
+            error_event_key=exc.event_key,
         )
     events = tuple(sorted(events, key=_news_radar_event_sort_key))
     if mode == "startup":
@@ -1387,7 +1449,12 @@ def _build_news_radar_record(
         _serialize_news_source_error(error) for error in batch.errors
     )
     if analysis is not None and analysis.error_code is not None:
-        errors.append({"code": analysis.error_code})
+        analysis_error: Dict[str, Any] = {"code": analysis.error_code}
+        if analysis.error_detail is not None:
+            analysis_error["detail"] = analysis.error_detail
+        if analysis.error_event_key is not None:
+            analysis_error["event_key"] = analysis.error_event_key
+        errors.append(analysis_error)
 
     llm_call_count = (
         1

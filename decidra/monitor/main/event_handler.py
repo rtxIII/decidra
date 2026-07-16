@@ -4,7 +4,7 @@ EventHandler - 事件处理和用户动作模块
 负责所有用户交互、事件处理和动作方法
 """
 
-from typing import Optional
+from typing import Any, Dict, Optional, Sequence
 
 from textual.events import Key
 from textual.widgets import DataTable, TabbedContent, TabPane
@@ -14,7 +14,9 @@ from ...monitor.widgets.window_dialog import show_confirm_dialog
 from ...monitor.widgets.auto_dialog import show_auto_input_dialog
 from ...monitor.widgets.stock_action_dialog import (
     ACTION_ANALYSIS,
+    ACTION_BUY,
     ACTION_DELETE,
+    ACTION_SELL,
     ACTION_STRATEGY_ADD,
     ACTION_STRATEGY_REMOVE,
     StockActionDialog,
@@ -48,6 +50,25 @@ def needs_large_order_confirm(price, qty) -> bool:
         return False
     amount = price_value * qty_value
     return amount >= LARGE_ORDER_CONFIRM_AMOUNT or qty_value >= LARGE_ORDER_CONFIRM_QTY
+
+
+def find_open_position(
+    position_data: Optional[Sequence[Dict[str, Any]]],
+    stock_code: str,
+) -> Optional[Dict[str, Any]]:
+    """按股票代码查找数量大于零的持仓。"""
+    for position in position_data or ():
+        if not isinstance(position, dict):
+            continue
+        if position.get("stock_code") != stock_code:
+            continue
+        try:
+            position_quantity = float(position.get("qty", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if position_quantity > 0:
+            return position
+    return None
 
 
 class EventHandler:
@@ -346,18 +367,59 @@ class EventHandler:
                 ui_manager._get_stock_display_name(stock_code, stock_code)
                 if ui_manager else stock_code
             )
+            selected_position = find_open_position(
+                getattr(self.app_core, "position_data", None),
+                stock_code,
+            )
 
-            options = build_stock_menu_options(stock_code, in_watchlist)
+            options = build_stock_menu_options(
+                stock_code,
+                in_watchlist,
+                has_position=selected_position is not None,
+            )
             action = await self.app.push_screen_wait(
                 StockActionDialog(stock_code, display_name, options)
             )
 
             if action == ACTION_ANALYSIS:
                 await self.create_stock_analysis_tab()
+            elif action == ACTION_BUY:
+                current_position = find_open_position(
+                    getattr(self.app_core, "position_data", None),
+                    stock_code,
+                )
+                if current_position is not None:
+                    if ui_manager and ui_manager.info_panel:
+                        await ui_manager.info_panel.log_warning(
+                            f"股票 {stock_code} 的持仓状态已变化，请重新打开菜单",
+                            "买入操作",
+                        )
+                    return
+                stock_info = getattr(self.app_core, "stock_data", {}).get(stock_code)
+                price = (
+                    stock_info.current_price
+                    if stock_info is not None and hasattr(stock_info, "current_price")
+                    else None
+                )
+                stock_name = display_name if display_name != stock_code else ""
+                await self._show_buy_order(stock_code, stock_name, price)
             elif action == ACTION_DELETE:
                 # 直接 await（不经 action_delete_stock 再起 exclusive worker，
                 # 避免同组 exclusive 互相取消）
                 await self._delete_stock_worker()
+            elif action == ACTION_SELL:
+                current_position = find_open_position(
+                    getattr(self.app_core, "position_data", None),
+                    stock_code,
+                )
+                if current_position is None:
+                    if ui_manager and ui_manager.info_panel:
+                        await ui_manager.info_panel.log_warning(
+                            f"股票 {stock_code} 的持仓状态已变化，请重新打开菜单",
+                            "卖出操作",
+                        )
+                    return
+                await self._show_sell_order(current_position)
             elif action in (ACTION_STRATEGY_ADD, ACTION_STRATEGY_REMOVE):
                 await self._toggle_strategy_watchlist(
                     stock_code, action == ACTION_STRATEGY_ADD
@@ -873,50 +935,7 @@ class EventHandler:
                 return
 
             selected_position = self.app_core.position_data[self.app_core.current_position_cursor]
-
-            # 提取持仓信息
-            stock_code = selected_position.get('stock_code', '')
-            stock_name = selected_position.get('stock_name', '')
-            can_sell_qty = int(selected_position.get('can_sell_qty', 0))
-            nominal_price = selected_position.get('nominal_price', 0)
-
-            # 检查可卖数量
-            if can_sell_qty <= 0:
-                ui_manager = getattr(self.app_core.app, 'ui_manager', None)
-                if ui_manager and ui_manager.info_panel:
-                    await ui_manager.info_panel.log_warning(
-                        f"股票 {stock_code} ({stock_name}) 可卖数量为0，无法卖出",
-                        "卖出操作"
-                    )
-                return
-
-            self.logger.info(f"准备卖出持仓: {stock_code} ({stock_name}), 可卖数量: {can_sell_qty}, 当前价: {nominal_price}")
-
-            # 构建默认值字典
-            default_values = {
-                "code": stock_code,
-                "price": nominal_price,
-                "qty": can_sell_qty,
-                "trd_side": "SELL"  # 强制设置为卖出
-            }
-
-            # 导入并显示下单对话框
-            from ..widgets.order_dialog import show_place_order_dialog
-
-            order_data = await show_place_order_dialog(
-                app=self.app,
-                title=f"卖出 - {stock_code} ({stock_name})",
-                default_values=default_values,
-                submit_callback=self._handle_place_submit,
-                cancel_callback=self._handle_place_cancel
-            )
-
-            if order_data:
-                self.logger.info(f"卖出订单数据已收集: {order_data}")
-                # 提交订单请求
-                await self._submit_place_order(order_data)
-            else:
-                self.logger.info("用户取消了卖出操作")
+            await self._show_sell_order(selected_position)
 
         except Exception as e:
             self.logger.error(f"卖出持仓失败: {e}")
@@ -925,6 +944,50 @@ class EventHandler:
             ui_manager = getattr(self.app_core.app, 'ui_manager', None)
             if ui_manager and ui_manager.info_panel:
                 await ui_manager.info_panel.log_info(f"卖出持仓失败: {e}", "卖出操作")
+
+    async def _show_sell_order(self, selected_position: Dict[str, Any]) -> None:
+        """为明确的持仓标的显示卖出对话框。"""
+        stock_code = selected_position.get('stock_code', '')
+        stock_name = selected_position.get('stock_name', '')
+        try:
+            can_sell_qty = int(selected_position.get('can_sell_qty', 0) or 0)
+        except (TypeError, ValueError):
+            can_sell_qty = 0
+        nominal_price = selected_position.get('nominal_price', 0)
+
+        if can_sell_qty <= 0:
+            ui_manager = getattr(self.app_core.app, 'ui_manager', None)
+            if ui_manager and ui_manager.info_panel:
+                await ui_manager.info_panel.log_warning(
+                    f"股票 {stock_code} ({stock_name}) 可卖数量为0，无法卖出",
+                    "卖出操作"
+                )
+            return
+
+        self.logger.info(f"准备卖出持仓: {stock_code} ({stock_name}), 可卖数量: {can_sell_qty}, 当前价: {nominal_price}")
+
+        default_values = {
+            "code": stock_code,
+            "price": nominal_price,
+            "qty": can_sell_qty,
+            "trd_side": "SELL"
+        }
+
+        from ..widgets.order_dialog import show_place_order_dialog
+
+        order_data = await show_place_order_dialog(
+            app=self.app,
+            title=f"卖出 - {stock_code} ({stock_name})",
+            default_values=default_values,
+            submit_callback=self._handle_place_submit,
+            cancel_callback=self._handle_place_cancel
+        )
+
+        if order_data:
+            self.logger.info(f"卖出订单数据已收集: {order_data}")
+            await self._submit_place_order(order_data)
+        else:
+            self.logger.info("用户取消了卖出操作")
 
     async def action_place_order(self) -> None:
         """新订单动作 - 弹出下单对话框"""
@@ -1034,36 +1097,7 @@ class EventHandler:
                     await ui_manager.info_panel.log_info("未能确定买入标的", "买入操作")
                 return
 
-            # 构建默认值：方向买入、价格取现价、数量取每手股数
-            default_values = {
-                "code": stock_code,
-                "trd_side": "BUY",
-                "qty": self._default_buy_qty(stock_code),
-            }
-            if price:
-                default_values["price"] = price
-
-            title = f"买入 - {stock_code}"
-            if stock_name:
-                title += f" ({stock_name})"
-
-            self.logger.info(f"准备买入: {stock_code} ({stock_name}), 现价: {price}, 默认数量: {default_values['qty']}")
-
-            from ..widgets.order_dialog import show_place_order_dialog
-
-            order_data = await show_place_order_dialog(
-                app=self.app,
-                title=title,
-                default_values=default_values,
-                submit_callback=self._handle_place_submit,
-                cancel_callback=self._handle_place_cancel
-            )
-
-            if order_data:
-                self.logger.info(f"买入订单数据已收集: {order_data}")
-                await self._submit_place_order(order_data)
-            else:
-                self.logger.info("用户取消了买入操作")
+            await self._show_buy_order(stock_code, stock_name, price)
 
         except Exception as e:
             self.logger.error(f"买入失败: {e}")
@@ -1072,6 +1106,43 @@ class EventHandler:
             ui_manager = getattr(self.app_core.app, 'ui_manager', None)
             if ui_manager and ui_manager.info_panel:
                 await ui_manager.info_panel.log_info(f"买入失败: {e}", "买入操作")
+
+    async def _show_buy_order(
+        self,
+        stock_code: str,
+        stock_name: str = "",
+        price: Optional[float] = None,
+    ) -> None:
+        """为明确的股票标的显示买入对话框。"""
+        default_values = {
+            "code": stock_code,
+            "trd_side": "BUY",
+            "qty": self._default_buy_qty(stock_code),
+        }
+        if price:
+            default_values["price"] = price
+
+        title = f"买入 - {stock_code}"
+        if stock_name:
+            title += f" ({stock_name})"
+
+        self.logger.info(f"准备买入: {stock_code} ({stock_name}), 现价: {price}, 默认数量: {default_values['qty']}")
+
+        from ..widgets.order_dialog import show_place_order_dialog
+
+        order_data = await show_place_order_dialog(
+            app=self.app,
+            title=title,
+            default_values=default_values,
+            submit_callback=self._handle_place_submit,
+            cancel_callback=self._handle_place_cancel
+        )
+
+        if order_data:
+            self.logger.info(f"买入订单数据已收集: {order_data}")
+            await self._submit_place_order(order_data)
+        else:
+            self.logger.info("用户取消了买入操作")
 
     def _handle_place_submit(self, order_data) -> None:
         """下单提交回调函数"""
@@ -1316,4 +1387,3 @@ class EventHandler:
             ui_manager = getattr(self.app_core.app, 'ui_manager', None)
             if ui_manager and ui_manager.info_panel:
                 await ui_manager.info_panel.log_info(f"提交改单请求失败: {e}", "改单操作")
-

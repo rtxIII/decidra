@@ -1,6 +1,7 @@
 """股票操作菜单对话框。
 
-监控股票列表光标行按回车弹出：进入 K 线分析 / 删除该股票 / 加入(移出)策略监控。
+监控股票列表光标行按回车弹出：进入 K 线分析 / 买入(卖出) / 删除该股票 /
+加入(移出)策略监控。
 选项由 ``build_stock_menu_options`` 纯函数构造（动作 id 稳定，供调用方路由分发），
 本模块只负责 Textual 交互，不依赖 strategy 包。
 """
@@ -20,27 +21,36 @@ from textual.widgets.option_list import Option
 
 # 动作 id：调用方按此路由分发，勿改动
 ACTION_ANALYSIS = "analysis"
+ACTION_BUY = "buy"
 ACTION_DELETE = "delete"
+ACTION_SELL = "sell"
 ACTION_STRATEGY_ADD = "strategy_add"
 ACTION_STRATEGY_REMOVE = "strategy_remove"
 
 
 def build_stock_menu_options(
-    stock_code: str, in_strategy_watchlist: bool
+    stock_code: str,
+    in_strategy_watchlist: bool,
+    has_position: bool = False,
 ) -> List[Tuple[str, str]]:
     """构造股票操作菜单选项。
 
     Args:
         stock_code: 富途股票代码。
-        in_strategy_watchlist: 是否已在策略 watchlist 中（决定第三项为加入还是移出）。
+        in_strategy_watchlist: 是否已在策略 watchlist 中（决定策略项为加入还是移出）。
+        has_position: 是否持有该股票（决定交易项为买入还是卖出）。
 
     Returns:
         (action_id, markup 标签) 列表。
     """
     options = [
         (ACTION_ANALYSIS, "📈 进入 K 线分析"),
-        (ACTION_DELETE, "[red]🗑 删除该股票[/red]"),
     ]
+    if has_position:
+        options.append((ACTION_SELL, "[red]💰 卖出[/red]"))
+    else:
+        options.append((ACTION_BUY, "[green]🛒 买入[/green]"))
+    options.append((ACTION_DELETE, "[red]🗑 删除该股票[/red]"))
     if in_strategy_watchlist:
         options.append((ACTION_STRATEGY_REMOVE, "[yellow]▶ 移出策略监控[/yellow]"))
     else:

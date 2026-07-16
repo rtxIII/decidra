@@ -41,6 +41,7 @@ from decidra.strategy.news_radar import (
     LLM_ITEM_MAX_ATTEMPTS,
     LLM_ITEMS_PER_CALL_LIMIT,
     LLM_OUTPUT_TOKEN_LIMIT,
+    NEWS_RADAR_ERROR_EVENT_KEY_CHARACTER_LIMIT,
     NEWS_RADAR_LLM_TIMEOUT_SECONDS,
     NEWS_RADAR_RESOURCE_CLOSE_TIMEOUT_SECONDS,
     NEWS_RADAR_REASON_CHARACTER_LIMIT,
@@ -1994,6 +1995,99 @@ class TestNewsRadarProducerContract(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(persisted_record["pending_item_count"], 0)
         self.assertEqual(persisted_record["failed_item_count"], 0)
+
+    async def test_invalid_event_keys_persist_bounded_details(self) -> None:
+        valid_event = copy.deepcopy(COMPACT_LLM_RESPONSE["events"][0])
+        out_of_batch_event = copy.deepcopy(valid_event)
+        out_of_batch_event["event_key"] = (
+            "cls-telegraph:fictional\n"
+            + "x" * NEWS_RADAR_ERROR_EVENT_KEY_CHARACTER_LIMIT
+        )
+        invalid_type_event = copy.deepcopy(valid_event)
+        invalid_type_event["event_key"] = ["cls-telegraph:cls-001"]
+        invalid_event_cases = (
+            (
+                "not_in_batch",
+                [out_of_batch_event],
+                "not_in_batch",
+            ),
+            (
+                "duplicate",
+                [valid_event, copy.deepcopy(valid_event)],
+                "duplicate",
+            ),
+            (
+                "invalid_type",
+                [invalid_type_event],
+                "invalid_type",
+            ),
+        )
+
+        for case_name, response_events, expected_detail in invalid_event_cases:
+            with self.subTest(case_name=case_name):
+                response = FakeOpenAIResponse(
+                    choices=(
+                        FakeOpenAIChoice(
+                            message=FakeOpenAIMessage(
+                                json.dumps(
+                                    {"events": response_events},
+                                    ensure_ascii=False,
+                                )
+                            ),
+                            finish_reason="stop",
+                        ),
+                    ),
+                    usage=FakeOpenAITokenUsage(
+                        prompt_tokens=240,
+                        completion_tokens=96,
+                    ),
+                )
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    runtime_path = Path(temporary_directory)
+                    records_path = runtime_path / "news_radar.jsonl"
+                    result = await run_news_radar_cycle(
+                        source_ids=("cls-telegraph",),
+                        profile=self._resolve_profile(),
+                        strategy_stocks={"HK.00700": "腾讯控股"},
+                        monitor_stocks={},
+                        client=FakeOpenAIClient(response),
+                        fetcher=FakeNewsNowFetcher(
+                            build_newsnow_success_responses()
+                        ),
+                        state_path=runtime_path / "news_radar_state.json",
+                        records_path=records_path,
+                        generated_at_factory=lambda: datetime.fromisoformat(
+                            SYNTHETIC_GENERATED_AT
+                        ),
+                        record_id_factory=lambda: "a1b2c3d4",
+                    )
+                    persisted_record = json.loads(
+                        records_path.read_text(encoding="utf-8").strip()
+                    )
+
+                self.assertEqual(result.record, persisted_record)
+                self.assertEqual(len(persisted_record["errors"]), 1)
+                persisted_error = persisted_record["errors"][0]
+                self.assertEqual(persisted_error["code"], "invalid_event_key")
+                self.assertEqual(persisted_error["detail"], expected_detail)
+                if case_name == "not_in_batch":
+                    self.assertEqual(
+                        len(persisted_error["event_key"]),
+                        NEWS_RADAR_ERROR_EVENT_KEY_CHARACTER_LIMIT,
+                    )
+                    self.assertIn(r"\n", persisted_error["event_key"])
+                    self.assertNotIn("\n", persisted_error["event_key"])
+                    self.assertTrue(persisted_error["event_key"].endswith("..."))
+                elif case_name == "duplicate":
+                    self.assertEqual(
+                        persisted_error["event_key"],
+                        "cls-telegraph:cls-001",
+                    )
+                else:
+                    self.assertEqual(
+                        persisted_error["event_key"],
+                        '["cls-telegraph:cls-001"]',
+                    )
 
     async def test_empty_poll_updates_state_without_llm_or_jsonl(self) -> None:
         pending_item = self._build_pending_item()

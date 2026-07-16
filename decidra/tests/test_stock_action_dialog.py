@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -15,7 +16,9 @@ from decidra.monitor.manager.ui import STRATEGY_MARK_PREFIX, UIManager
 from decidra.monitor.monitor_layout import STOCK_COLUMNS, MonitorLayout
 from decidra.monitor.widgets.stock_action_dialog import (
     ACTION_ANALYSIS,
+    ACTION_BUY,
     ACTION_DELETE,
+    ACTION_SELL,
     ACTION_STRATEGY_ADD,
     ACTION_STRATEGY_REMOVE,
     StockActionDialog,
@@ -152,17 +155,158 @@ class TestKeyDispatch(unittest.IsolatedAsyncioTestCase):
 
 
 class TestBuildStockMenuOptions(unittest.TestCase):
-    def test_not_in_watchlist_offers_add(self):
-        options = build_stock_menu_options(STOCK_CODE, in_strategy_watchlist=False)
+    def test_without_position_offers_buy(self):
+        options = build_stock_menu_options(
+            STOCK_CODE,
+            in_strategy_watchlist=False,
+            has_position=False,
+        )
         self.assertEqual(
             [action_id for action_id, _ in options],
-            [ACTION_ANALYSIS, ACTION_DELETE, ACTION_STRATEGY_ADD],
+            [ACTION_ANALYSIS, ACTION_BUY, ACTION_DELETE, ACTION_STRATEGY_ADD],
         )
 
-    def test_in_watchlist_offers_remove(self):
-        options = build_stock_menu_options(STOCK_CODE, in_strategy_watchlist=True)
-        self.assertEqual(options[2][0], ACTION_STRATEGY_REMOVE)
-        self.assertIn("移出", options[2][1])
+    def test_with_position_offers_sell(self):
+        options = build_stock_menu_options(
+            STOCK_CODE,
+            in_strategy_watchlist=True,
+            has_position=True,
+        )
+        self.assertEqual(
+            [action_id for action_id, _ in options],
+            [ACTION_ANALYSIS, ACTION_SELL, ACTION_DELETE, ACTION_STRATEGY_REMOVE],
+        )
+        self.assertIn("卖出", options[1][1])
+        self.assertIn("移出", options[3][1])
+
+
+class _StockMenuActionHarness:
+    """捕获股票菜单及下单对话框调用的最小应用。"""
+
+    def __init__(self, selected_action):
+        self.selected_action = selected_action
+        self.worker = None
+        self.dialog = None
+        self.ui_manager = SimpleNamespace(
+            strategy_watchlist=set(),
+            info_panel=None,
+            _get_stock_display_name=lambda stock_code, fallback: fallback,
+        )
+
+    def run_worker(self, worker, exclusive=False):
+        self.worker = worker()
+
+    async def push_screen_wait(self, dialog):
+        self.dialog = dialog
+        return self.selected_action
+
+
+class TestStockMenuTradeRouting(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _make_handler(selected_action, positions):
+        from decidra.monitor.main.event_handler import EventHandler
+
+        app = _StockMenuActionHarness(selected_action)
+        app_core = SimpleNamespace(
+            app=app,
+            active_table="stock",
+            current_stock_cursor=0,
+            current_position_cursor=0,
+            monitored_stocks=[STOCK_CODE],
+            position_data=positions,
+            stock_data={STOCK_CODE: SimpleNamespace(current_price=350.0)},
+            stock_basicinfo_cache={STOCK_CODE: {"lot_size": 100}},
+        )
+        return EventHandler(app_core, app), app
+
+    async def _run_menu(self, selected_action, positions):
+        handler, app = self._make_handler(selected_action, positions)
+        await handler.action_stock_menu()
+        self.assertIsNotNone(app.worker)
+        await app.worker
+        return app
+
+    async def test_zero_quantity_position_offers_buy(self):
+        app = await self._run_menu(
+            None,
+            [{"stock_code": STOCK_CODE, "qty": 0, "can_sell_qty": 0}],
+        )
+
+        self.assertEqual(app.dialog.options[1][0], ACTION_BUY)
+
+    async def test_invalid_quantity_position_offers_buy(self):
+        app = await self._run_menu(
+            None,
+            [{"stock_code": STOCK_CODE, "qty": "invalid", "can_sell_qty": 0}],
+        )
+
+        self.assertEqual(app.dialog.options[1][0], ACTION_BUY)
+
+    async def test_buy_targets_menu_stock(self):
+        order_dialog = AsyncMock(return_value=None)
+
+        with patch(
+            "decidra.monitor.widgets.order_dialog.show_place_order_dialog",
+            order_dialog,
+        ):
+            await self._run_menu(ACTION_BUY, [])
+
+        default_values = order_dialog.await_args.kwargs["default_values"]
+        self.assertEqual(default_values["code"], STOCK_CODE)
+        self.assertEqual(default_values["qty"], 100)
+        self.assertEqual(default_values["trd_side"], "BUY")
+
+    async def test_unsellable_position_offers_sell_without_order_dialog(self):
+        positions = [
+            {
+                "stock_code": STOCK_CODE,
+                "stock_name": "腾讯控股",
+                "qty": 200,
+                "can_sell_qty": 0,
+                "nominal_price": 350.0,
+            }
+        ]
+        order_dialog = AsyncMock(return_value=None)
+
+        with patch(
+            "decidra.monitor.widgets.order_dialog.show_place_order_dialog",
+            order_dialog,
+        ):
+            app = await self._run_menu(ACTION_SELL, positions)
+
+        self.assertEqual(app.dialog.options[1][0], ACTION_SELL)
+        order_dialog.assert_not_awaited()
+
+    async def test_sell_targets_menu_stock_instead_of_position_cursor(self):
+        positions = [
+            {
+                "stock_code": "HK.09988",
+                "stock_name": "阿里巴巴-W",
+                "qty": 100,
+                "can_sell_qty": 100,
+                "nominal_price": 120.0,
+            },
+            {
+                "stock_code": STOCK_CODE,
+                "stock_name": "腾讯控股",
+                "qty": 200,
+                "can_sell_qty": 200,
+                "nominal_price": 350.0,
+            },
+        ]
+        order_dialog = AsyncMock(return_value=None)
+
+        with patch(
+            "decidra.monitor.widgets.order_dialog.show_place_order_dialog",
+            order_dialog,
+        ):
+            app = await self._run_menu(ACTION_SELL, positions)
+
+        self.assertEqual(app.dialog.options[1][0], ACTION_SELL)
+        default_values = order_dialog.await_args.kwargs["default_values"]
+        self.assertEqual(default_values["code"], STOCK_CODE)
+        self.assertEqual(default_values["qty"], 200)
+        self.assertEqual(default_values["trd_side"], "SELL")
 
 
 class _DialogHarness(App):
@@ -183,12 +327,17 @@ class _DialogHarness(App):
 
 
 class TestStockActionDialog(unittest.IsolatedAsyncioTestCase):
-    OPTIONS = build_stock_menu_options(STOCK_CODE, in_strategy_watchlist=False)
+    OPTIONS = build_stock_menu_options(
+        STOCK_CODE,
+        in_strategy_watchlist=False,
+        has_position=False,
+    )
 
     async def test_enter_returns_highlighted_action(self):
         app = _DialogHarness(self.OPTIONS)
         async with app.run_test() as pilot:
             await pilot.pause()
+            await pilot.press("down")
             await pilot.press("down")
             await pilot.press("down")
             await pilot.press("enter")
@@ -211,7 +360,7 @@ class TestStockActionDialog(unittest.IsolatedAsyncioTestCase):
             await pilot.press("down")
             await pilot.press("space")
             await pilot.pause()
-        self.assertEqual(app.result, ACTION_DELETE)
+        self.assertEqual(app.result, ACTION_BUY)
 
     async def test_ws_keys_move_highlight(self):
         """w/s 与 ↑↓ 等效（主界面键位习惯延续进菜单）。"""
@@ -220,10 +369,11 @@ class TestStockActionDialog(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.press("s")
             await pilot.press("s")
+            await pilot.press("s")
             await pilot.press("w")
             await pilot.press("enter")
             await pilot.pause()
-        self.assertEqual(app.result, ACTION_DELETE, "s,s,w 后高亮应停在第二项")
+        self.assertEqual(app.result, ACTION_DELETE, "s,s,s,w 后高亮应停在第三项")
 
 
 class TestUpdateWatchlist(unittest.TestCase):

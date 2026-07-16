@@ -434,9 +434,11 @@ class TestInstallCron(unittest.TestCase):
             try:
                 from openharness.services.cron import upsert_cron_job
 
-                # 旧单体 job、用户自有 job、用户自有 decidra_ 前缀 job 并存
+                # 旧单体 job、已禁用新闻 job、用户自有 job 并存
                 upsert_cron_job({"name": "decidra_strategy_scan",
                                  "schedule": "*/5 * * * *", "command": "old"})
+                upsert_cron_job({"name": "decidra_news_radar",
+                                 "schedule": "*/3 * * * *", "command": "stale"})
                 upsert_cron_job({"name": "user_own_job",
                                  "schedule": "0 0 * * *", "command": "keep"})
                 upsert_cron_job({"name": "decidra_backup",
@@ -444,8 +446,11 @@ class TestInstallCron(unittest.TestCase):
 
                 result = install_cron(self.CONFIG)
 
-                self.assertEqual(result["removed"], ["decidra_strategy_scan"],
-                                 "只清理策略前缀/遗留名单中的失效 job")
+                self.assertEqual(
+                    set(result["removed"]),
+                    {"decidra_strategy_scan", "decidra_news_radar"},
+                    "清理策略前缀、遗留单体与已禁用新闻 job",
+                )
                 jobs = json.loads((Path(tmp) / "data" / "cron_jobs.json").read_text(encoding="utf-8"))
                 names = {j["name"] for j in jobs}
                 self.assertIn("decidra_strategy_czsc_resonance", names)
@@ -454,6 +459,7 @@ class TestInstallCron(unittest.TestCase):
                 self.assertIn("decidra_backup", names,
                               "decidra_ 前缀但非策略前缀的用户 job 不得被删除")
                 self.assertNotIn("decidra_strategy_scan", names)
+                self.assertNotIn("decidra_news_radar", names)
             finally:
                 if old_env is None:
                     os.environ.pop("OPENHARNESS_CONFIG_DIR", None)

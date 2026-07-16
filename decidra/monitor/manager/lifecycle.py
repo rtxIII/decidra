@@ -5,12 +5,16 @@ LifecycleManager - 应用生命周期管理模块
 """
 
 import asyncio
+import json
 import signal
 import sys
 import os
 from typing import Optional, Dict, Any
 
 from ...utils.global_vars import get_logger
+
+
+STRATEGY_ALERTS_POLL_INTERVAL_SECONDS = 30
 
 
 class LifecycleManager:
@@ -30,7 +34,7 @@ class LifecycleManager:
 
         # 策略告警监视
         self._strategy_alerts_task: Optional[asyncio.Task] = None
-        
+
         # 标签页状态管理器 - 延迟初始化
         self._tab_state_manager: Optional['TabStateManager'] = None
         
@@ -88,7 +92,7 @@ class LifecycleManager:
 
         # 启动策略告警监视（tail alerts.jsonl → 终端面板）
         self.start_strategy_alerts_watch()
-        
+
         # 恢复标签页状态（在所有初始化完成后）临时关闭
         #await self.restore_tab_state()
         
@@ -224,8 +228,8 @@ class LifecycleManager:
             if self._strategy_alerts_task:
                 self._strategy_alerts_task.cancel()
                 self._strategy_alerts_task = None
-                self.logger.debug("任务监控定时器已停止")
-            
+                self.logger.debug("策略告警播报任务已停止")
+
             # 2. 取消所有异步任务
             try:
                 # 记录退出前的任务状态
@@ -377,22 +381,90 @@ class LifecycleManager:
             # 继续退出过程，不让异常阻止程序退出
 
     def start_strategy_alerts_watch(self) -> None:
-        """启动策略告警监视：增量读取 alerts.jsonl，新告警写入终端面板。"""
+        """启动策略告警与新闻雷达双 JSONL 消费者。"""
         if self._strategy_alerts_task and not self._strategy_alerts_task.done():
             return
         self._strategy_alerts_task = asyncio.create_task(self.strategy_alerts_loop())
         self.logger.info("策略告警监视已启动")
 
-    async def strategy_alerts_loop(self) -> None:
-        """策略告警监视循环：面板就绪后先播报概况与最近告警，此后 30 秒增量播报新增。
+    @staticmethod
+    def _jsonl_initial_offset(path) -> int:
+        return path.stat().st_size if path.exists() else 0
+
+    @staticmethod
+    def _historical_news_event_keys(path, end_offset: int) -> set:
+        """流式读取既有 radar 记录，仅建立跨启动去重基线。"""
+        event_keys = set()
+        if end_offset <= 0:
+            return event_keys
+        with path.open("rb") as radar_file:
+            remaining_bytes = end_offset
+            while remaining_bytes > 0:
+                line = radar_file.readline(remaining_bytes)
+                if not line:
+                    break
+                remaining_bytes -= len(line)
+                if not line.endswith(b"\n"):
+                    continue
+                try:
+                    record = json.loads(
+                        line.decode("utf-8", errors="replace")
+                    )
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                events = record.get("events")
+                if not isinstance(events, list):
+                    continue
+                for event in events:
+                    if not isinstance(event, dict):
+                        continue
+                    event_key = event.get("event_key")
+                    if isinstance(event_key, str) and event_key:
+                        event_keys.add(event_key)
+        return event_keys
+
+    async def strategy_alerts_loop(
+        self,
+        *,
+        alerts_path=None,
+        radar_records_path=None,
+        sleep_function=asyncio.sleep,
+    ) -> None:
+        """双 JSONL 播报循环：独立维护策略告警与新闻雷达 offset。
 
         sleep 置于每轮开头（含首轮回放前的等待面板期），保证任何异常路径下
         本循环都不会退化为无延时忙循环。
         """
         from ...strategy.alerts import ALERTS_PATH, read_new_alerts
-        from ...strategy.display import build_startup_lines, format_alert
+        from ...strategy.display import (
+            build_startup_lines,
+            format_alert,
+            format_news_radar_record,
+        )
+        from ...strategy.news_radar import NEWS_RADAR_RECORDS_PATH
 
-        offset = ALERTS_PATH.stat().st_size if ALERTS_PATH.exists() else 0
+        alerts_path = ALERTS_PATH if alerts_path is None else alerts_path
+        radar_records_path = (
+            NEWS_RADAR_RECORDS_PATH
+            if radar_records_path is None
+            else radar_records_path
+        )
+        try:
+            alerts_offset = self._jsonl_initial_offset(alerts_path)
+            radar_offset = self._jsonl_initial_offset(radar_records_path)
+            broadcast_event_keys = self._historical_news_event_keys(
+                radar_records_path,
+                radar_offset,
+            )
+        except Exception as exc:
+            self.logger.error(
+                "策略与新闻 JSONL offset 初始化失败: %s",
+                type(exc).__name__,
+            )
+            return
+
         replay_done = False
         while True:
             try:
@@ -402,10 +474,15 @@ class LifecycleManager:
                         for line in build_startup_lines():
                             panel.write_transcript(line)
                         replay_done = True
-                await asyncio.sleep(30)
-                alerts, offset = read_new_alerts(offset)
-                if not alerts:
-                    continue
+                await sleep_function(STRATEGY_ALERTS_POLL_INTERVAL_SECONDS)
+                alerts, alerts_offset = read_new_alerts(
+                    alerts_offset,
+                    alerts_path,
+                )
+                radar_records, radar_offset = read_new_alerts(
+                    radar_offset,
+                    radar_records_path,
+                )
                 panel = self._get_terminal_panel()
                 for alert in alerts:
                     if panel is not None:
@@ -414,11 +491,47 @@ class LifecycleManager:
                         "策略告警: %s %s %s",
                         alert.get("symbol"), alert.get("action"), alert.get("reason"),
                     )
+                for radar_record in radar_records:
+                    if not isinstance(radar_record, dict):
+                        continue
+                    raw_events = radar_record.get("events")
+                    events = raw_events if isinstance(raw_events, list) else []
+                    unique_events = []
+                    new_event_keys = []
+                    for event in events:
+                        if not isinstance(event, dict):
+                            continue
+                        event_key = event.get("event_key")
+                        if (
+                            isinstance(event_key, str)
+                            and event_key
+                            and event_key in broadcast_event_keys
+                        ):
+                            continue
+                        unique_events.append(event)
+                        if isinstance(event_key, str) and event_key:
+                            new_event_keys.append(event_key)
+                    errors = radar_record.get("errors")
+                    has_errors = isinstance(errors, list) and bool(errors)
+                    if not unique_events and not has_errors:
+                        continue
+                    display_record = dict(radar_record)
+                    display_record["events"] = unique_events
+                    if panel is not None:
+                        panel.write_transcript(
+                            format_news_radar_record(display_record)
+                        )
+                    broadcast_event_keys.update(new_event_keys)
+                    self.logger.info(
+                        "新闻雷达播报: events=%s errors=%s",
+                        len(unique_events),
+                        len(errors) if isinstance(errors, list) else 0,
+                    )
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 self.logger.error(f"策略告警监视异常: {exc}")
-                await asyncio.sleep(30)
+                await sleep_function(STRATEGY_ALERTS_POLL_INTERVAL_SECONDS)
 
     def start_terminal_runtime(self) -> None:
         """启动智能终端运行时（后台构建，不阻塞挂载）。
@@ -706,4 +819,3 @@ class LifecycleManager:
         except Exception as e:
             self.logger.error(f"获取标签页状态信息失败: {e}")
             return {"has_saved_state": False, "error": str(e)}
-    

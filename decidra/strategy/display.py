@@ -1,6 +1,6 @@
 """策略信息的终端展示：Rich markup 文本，供 monitor 终端面板播报。
 
-告警块与启动概况都是纯函数产出字符串，不依赖 Textual，便于单测。
+告警块、启动概况与新闻雷达都是纯函数产出字符串，不依赖 Textual，便于单测。
 """
 
 from __future__ import annotations
@@ -8,6 +8,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import List, Optional, Tuple
+from urllib.parse import urlparse
+
+from rich.markup import escape
 
 from ..utils.global_vars import PATH_DATA, PATH_OPENHARNESS_DATA
 from .alerts import ALERTS_PATH, load_enrichments, read_recent_alerts
@@ -68,6 +71,168 @@ def _fmt_dt(value, length: int = 19) -> str:
 
 
 _CONCLUSION_COLORS = {"支持": "green", "反对": "red", "观望": "yellow"}
+
+_NEWS_RADAR_STARTUP_EVENT_LIMIT = 5
+_NEWS_RADAR_ATTENTION_MARKUP = {
+    "high": "[bold red]高关注[/]",
+    "medium": "[yellow]中关注[/]",
+    "low": "[dim]低关注[/]",
+}
+_NEWS_RADAR_RELATION_LABELS = {
+    "direct": "直接相关",
+    "sector": "行业关联",
+    "macro": "宏观关联",
+    "hotspot": "热点关联",
+}
+_NEWS_RADAR_SENTIMENT_LABELS = {
+    "positive": "正面",
+    "negative": "负面",
+    "neutral": "中性",
+    "uncertain": "不确定",
+}
+_NEWS_RADAR_CONFIDENCE_LABELS = {
+    "high": "高",
+    "medium": "中",
+    "low": "低",
+}
+_NEWS_RADAR_URL_SCHEMES = frozenset({"http", "https"})
+_NEWS_RADAR_DISCLAIMER = "新闻关注提示，不构成股票池调整或交易建议"
+
+
+def _escape_news_radar_text(value) -> str:
+    normalized_text = " ".join(str(value or "").split())
+    return escape(normalized_text)
+
+
+def _format_news_radar_url(value) -> str:
+    raw_url = str(value or "").strip()
+    if not raw_url or any(character.isspace() for character in raw_url):
+        return "[dim]原文链接不可用[/]"
+    parsed_url = urlparse(raw_url)
+    if (
+        parsed_url.scheme.lower() not in _NEWS_RADAR_URL_SCHEMES
+        or not parsed_url.netloc
+    ):
+        return "[dim]原文链接不可用[/]"
+    return _escape_news_radar_text(raw_url)
+
+
+def _format_news_radar_stocks(value) -> str:
+    if not isinstance(value, list):
+        return "无已知关联标的"
+    stock_labels = []
+    for stock in value:
+        if not isinstance(stock, dict):
+            continue
+        stock_code = _escape_news_radar_text(stock.get("code"))
+        stock_name = _escape_news_radar_text(stock.get("name"))
+        if stock_code and stock_name:
+            stock_labels.append(f"{stock_code} {stock_name}")
+        elif stock_code or stock_name:
+            stock_labels.append(stock_code or stock_name)
+    return "、".join(stock_labels) or "无已知关联标的"
+
+
+def _format_news_radar_event(event: dict, event_number: int) -> List[str]:
+    attention = _NEWS_RADAR_ATTENTION_MARKUP.get(
+        str(event.get("attention") or ""),
+        "[dim]未知关注等级[/]",
+    )
+    title = _escape_news_radar_text(event.get("title")) or "未命名事件"
+    relation_type = str(event.get("relation_type") or "")
+    relation_label = _escape_news_radar_text(
+        _NEWS_RADAR_RELATION_LABELS.get(
+            relation_type,
+            relation_type or "未知关联",
+        )
+    )
+    sentiment = str(event.get("sentiment") or "")
+    sentiment_label = _escape_news_radar_text(
+        _NEWS_RADAR_SENTIMENT_LABELS.get(
+            sentiment,
+            sentiment or "未知",
+        )
+    )
+    confidence = str(event.get("confidence") or "")
+    confidence_label = _escape_news_radar_text(
+        _NEWS_RADAR_CONFIDENCE_LABELS.get(
+            confidence,
+            confidence or "未知",
+        )
+    )
+    related_stocks = _format_news_radar_stocks(
+        event.get("related_stocks")
+    )
+    reason = _escape_news_radar_text(event.get("reason")) or "未提供关注原因"
+    source_id = _escape_news_radar_text(event.get("source_id")) or "未知源"
+    effective_time = _escape_news_radar_text(
+        str(event.get("effective_time") or "").replace("T", " ")
+    ) or "未知时间"
+    time_label = (
+        "发布时间"
+        if event.get("time_source") == "pubDate"
+        else "来源更新时间"
+    )
+    source_url = _format_news_radar_url(event.get("url"))
+    return [
+        (
+            f"   {event_number}. {attention} [bold]{title}[/] ｜ "
+            f"{relation_label} ｜ 关联 {related_stocks} ｜ "
+            f"情绪 {sentiment_label} ｜ 置信度 {confidence_label}"
+        ),
+        (
+            f"      {reason} ｜ 来源 {source_id} ｜ "
+            f"{time_label} {effective_time} ｜ 原文 {source_url}"
+        ),
+    ]
+
+
+def _format_news_radar_error(error: dict) -> str:
+    error_code = _escape_news_radar_text(error.get("code")) or "unknown_error"
+    source_id = _escape_news_radar_text(error.get("source_id"))
+    detail = _escape_news_radar_text(error.get("detail"))
+    error_parts = []
+    if source_id:
+        error_parts.append(f"数据源 {source_id}")
+    error_parts.append(error_code)
+    if detail:
+        error_parts.append(detail)
+    return f"   [yellow]⚠ 系统提示[/] {' ｜ '.join(error_parts)}"
+
+
+def format_news_radar_record(record: dict) -> str:
+    """将一条 news_radar JSONL 记录格式化为安全的 Rich markup 区块。"""
+    is_startup = record.get("mode") == "startup"
+    mode_label = (
+        "当前快照，不代表完整离线历史"
+        if is_startup
+        else "实时更新"
+    )
+    lines = [
+        f"[bold cyan]📡 实时新闻关注雷达[/] [dim]{mode_label}[/]"
+    ]
+
+    events = record.get("events")
+    if not isinstance(events, list):
+        events = []
+    displayed_events = (
+        events[:_NEWS_RADAR_STARTUP_EVENT_LIMIT]
+        if is_startup
+        else events
+    )
+    for event_number, event in enumerate(displayed_events, start=1):
+        if isinstance(event, dict):
+            lines.extend(_format_news_radar_event(event, event_number))
+
+    errors = record.get("errors")
+    if isinstance(errors, list):
+        lines.extend(
+            _format_news_radar_error(error)
+            for error in errors
+            if isinstance(error, dict)
+        )
+    lines.append(f"[dim]{_NEWS_RADAR_DISCLAIMER}[/]")
+    return "\n".join(lines)
 
 
 def format_alert(alert: dict, enrichment: Optional[dict] = None) -> str:

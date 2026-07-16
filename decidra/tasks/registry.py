@@ -4,11 +4,12 @@
 - 每个启用策略一个独立 job（``decidra_strategy_<策略名>``），schedule 取
   ``strategies[].schedule``，缺省回退顶层 ``cron.schedule``——策略间频率独立、
   故障隔离（一个策略崩溃不影响其他 job）。
-- 未来非策略任务（数据预取、报表等）在 ``build_jobs`` 中追加即可。
+- 启用 ``news_radar`` 时声明一个 ``decidra_news_radar`` one-shot job，schedule
+  取 ``news_radar.schedule``。
 
-所有权约定：``sync_jobs`` 只清理 ``decidra_strategy_`` 前缀 + 显式遗留名单
-（旧单体 ``decidra_strategy_scan``）中不在注册表内的 job；其余 job（含用户
-手工注册的其他 ``decidra_`` 前缀 job）不受影响。
+所有权约定：``sync_jobs`` 只清理 ``decidra_strategy_`` 前缀、新闻雷达单例
+与显式遗留名单（旧单体 ``decidra_strategy_scan``）中不在注册表内的 job；
+其余 job（含用户手工注册的其他 ``decidra_`` 前缀 job）不受影响。
 """
 
 from __future__ import annotations
@@ -18,7 +19,11 @@ import shlex
 import sys
 from typing import Any, Dict, List, Optional
 
-from ..strategy.config import DEFAULT_CONFIG, load_config
+from ..strategy.config import (
+    DEFAULT_CONFIG,
+    load_config,
+    normalize_news_radar_config,
+)
 from ..utils.global_vars import PATH_REPO_ROOT, ensure_openharness_env, get_logger
 
 logger = get_logger("tasks_registry")
@@ -26,7 +31,9 @@ logger = get_logger("tasks_registry")
 # decidra_ 前缀用于 list 展示归类；删除所有权仅限策略前缀 + 遗留名单
 JOB_PREFIX = "decidra_"
 STRATEGY_JOB_PREFIX = "decidra_strategy_"
+NEWS_RADAR_JOB_NAME = "decidra_news_radar"
 LEGACY_JOB_NAMES = frozenset({"decidra_strategy_scan"})
+MANAGED_SINGLETON_JOB_NAMES = LEGACY_JOB_NAMES | {NEWS_RADAR_JOB_NAME}
 # 策略与顶层 cron.schedule 均未配置时的兜底扫描频率（单一事实来源：strategy.config）
 DEFAULT_STRATEGY_SCHEDULE: str = DEFAULT_CONFIG["cron"]["schedule"]
 # 策略名进入 job 名与 shell 命令行，仅允许安全字符
@@ -76,6 +83,20 @@ def build_jobs(config: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
             "cwd": str(PATH_REPO_ROOT),
             "enabled": True,
         })
+
+    news_radar_config = normalize_news_radar_config(
+        config.get("news_radar") or {}
+    )
+    if news_radar_config["enabled"]:
+        jobs.append({
+            "name": NEWS_RADAR_JOB_NAME,
+            "schedule": news_radar_config["schedule"],
+            "command": (
+                f'"{sys.executable}" -m decidra.strategy.news_radar run'
+            ),
+            "cwd": str(PATH_REPO_ROOT),
+            "enabled": True,
+        })
     return jobs
 
 
@@ -118,7 +139,7 @@ def sync_jobs(config: Optional[Dict[str, Any]] = None) -> Dict[str, List[str]]:
         for j in load_cron_jobs()
         if (
             str(j.get("name", "")).startswith(STRATEGY_JOB_PREFIX)
-            or j.get("name") in LEGACY_JOB_NAMES
+            or j.get("name") in MANAGED_SINGLETON_JOB_NAMES
         )
         and j.get("name") not in desired_names
     ]

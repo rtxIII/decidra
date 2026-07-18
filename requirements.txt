@@ -19,6 +19,7 @@ websocket-client
 charset_normalizer
 tushare
 akshare
+tdxpy
 #decidra
 jsonlite
 candlestick-chart==3.1.0

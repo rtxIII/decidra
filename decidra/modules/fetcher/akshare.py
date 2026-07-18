@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-AkshareFetcher - 主数据源 (Priority 1)
+AkshareFetcher - 东财数据源 (Priority 2)
 ===================================
 
 数据来源：东方财富爬虫（通过 akshare 库）
@@ -217,18 +217,18 @@ def _is_etf_code(stock_code: str) -> bool:
 class AkshareFetcher(BaseFetcher):
     """
     Akshare 数据源实现
-    
-    优先级：1（最高）
+
+    优先级：2（tdx 之后的东财回退，数据字段更丰富）
     数据来源：东方财富网爬虫
-    
+
     关键策略：
     - 每次请求前随机休眠 2.0-5.0 秒
     - 随机 User-Agent 轮换
     - 失败后指数退避重试（最多3次）
     """
-    
+
     name = "AkshareFetcher"
-    priority = 1
+    priority = 2
     
     def __init__(self, sleep_min: float = 2.0, sleep_max: float = 5.0):
         """

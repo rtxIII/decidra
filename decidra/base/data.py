@@ -261,15 +261,18 @@ class DataFetcherManager:
         初始化默认数据源列表
 
         按优先级排序：
-        1. AkshareFetcher (Priority 1)
-        2. BaostockFetcher (Priority 3)
-        3. YfinanceFetcher (Priority 4)
+        1. TdxFetcher (Priority 1, A 股主源)
+        2. AkshareFetcher (Priority 2)
+        3. BaostockFetcher (Priority 3)
+        4. YfinanceFetcher (Priority 4)
         """
         from decidra.modules.fetcher.akshare import AkshareFetcher
         from decidra.modules.fetcher.baostock import BaostockFetcher
+        from decidra.modules.fetcher.tdx import TdxFetcher
         from decidra.modules.fetcher.yfinance import YfinanceFetcher
 
         self._fetchers = [
+            TdxFetcher(),
             AkshareFetcher(),
             BaostockFetcher(),
             YfinanceFetcher(),

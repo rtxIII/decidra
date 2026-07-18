@@ -13,6 +13,7 @@
 from decidra.base.data import BaseFetcher, DataFetcherManager
 from .akshare import AkshareFetcher
 from .baostock import BaostockFetcher
+from .tdx import TdxFetcher
 from .yfinance import YfinanceFetcher
 
 __all__ = [
@@ -20,5 +21,6 @@ __all__ = [
     'DataFetcherManager',
     'AkshareFetcher',
     'BaostockFetcher',
+    'TdxFetcher',
     'YfinanceFetcher',
 ]

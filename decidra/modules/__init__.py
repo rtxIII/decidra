@@ -1,7 +1,6 @@
 # 导入其他模块
 
 from .futu_market import FutuMarket
-from .ai.claude_ai_client import ClaudeAIClient, AIAnalysisRequest, AIAnalysisResponse, create_claude_client, quick_stock_analysis
 
 #对应https://openapi.futunn.com/futu-api-doc/quote/overview.html
 """
@@ -22,12 +21,7 @@ from ..base.futu_class import FutuException
 
 
 __all__ = [
-    'FutuMarket', 
-    'ClaudeAIClient', 
-    'AIAnalysisRequest', 
-    'AIAnalysisResponse', 
-    'create_claude_client', 
-    'quick_stock_analysis'
+    'FutuMarket',
 ]
 
 

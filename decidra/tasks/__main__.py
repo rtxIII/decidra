@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 
-from ..utils.global_vars import ensure_openharness_env
 from .registry import JOB_PREFIX, sync_jobs
 
 
@@ -23,8 +22,7 @@ def main(argv=None) -> None:
         for name in result["removed"]:
             print(f"已移除: {name}")
     else:
-        ensure_openharness_env()
-        from openharness.services.cron import load_cron_jobs
+        from .cron_gateway import load_cron_jobs
 
         jobs = [
             j for j in load_cron_jobs()

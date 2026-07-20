@@ -136,6 +136,9 @@ exclude = ["tests*", "*test*", "*.runtime*", "examples*", "decidra.tests*"]
 
 [tool.setuptools.package-data]
 "*" = ["*.txt", "*.md", "*.json", "*.yaml", "*.yml", "*.ini", "*.toml", "*.css"]
+# 出厂默认技能树（SKILL.md + references/** + 参考脚本）递归打包进 wheel。
+# 顶层 "*" 的 glob 非递归，收不到技能子目录的嵌套资源，故显式声明。
+"decidra.skills" = ["**/*.md", "**/*.yaml", "**/*.json", "**/*.py"]
 
 # Remove dynamic version since we don't have __version__.py
 # [tool.setuptools.dynamic]

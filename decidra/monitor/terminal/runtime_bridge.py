@@ -90,6 +90,22 @@ PermissionPrompt = Callable[[str, str], Awaitable[bool]]
 AskUserPrompt = Callable[[str], Awaitable[str]]
 
 
+def _bundled_skills_dir() -> str:
+    """返回随 Decidra 出厂的默认技能目录（``decidra.skills``）绝对路径。
+
+    经 ``importlib.resources`` 定位，开发布局与 ``pip install`` 布局均成立；作为
+    openharness ``extra_skill_dirs`` 的一项，加载 Decidra 出厂默认技能。放在
+    workspace 技能目录之前传入，使 ``用户 workspace`` 同名技能可覆盖出厂版
+    （openharness 技能注册表为后注册覆盖前者）。
+
+    Returns:
+        ``decidra/skills`` 目录的字符串路径。
+    """
+    from importlib.resources import files
+
+    return str(files("decidra.skills"))
+
+
 async def _default_permission_prompt(tool_name: str, reason: str) -> bool:
     """保守默认权限回调：拒绝需确认的工具执行。
 
@@ -307,7 +323,12 @@ class TerminalRuntime:
                 permission_mode=self.permission_mode,
                 system_prompt=build_ohmo_system_prompt(self.cwd, workspace=workspace_root),
                 session_backend=OhmoSessionBackend(workspace_root),
-                extra_skill_dirs=(str(get_skills_dir(workspace_root)),),
+                # 出厂默认技能在前、用户 workspace 在后：openharness 注册表后注册
+                # 覆盖前者，故用户 workspace 同名技能可覆盖出厂默认。
+                extra_skill_dirs=(
+                    _bundled_skills_dir(),
+                    str(get_skills_dir(workspace_root)),
+                ),
                 memory_backend=create_memory_command_backend(workspace_root),
                 include_project_memory=self.include_project_memory,
                 permission_prompt=self.permission_prompt,

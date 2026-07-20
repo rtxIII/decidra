@@ -60,11 +60,8 @@ def start_cron_scheduler() -> bool:
         logger.info("cron 调度器已由 monitor 托管运行 (pid=%d)", _managed_process.pid)
         return False
 
-    # 与 runtime_bridge 一致：openharness 导入前收拢配置目录（幂等）。
-    from ...utils.global_vars import ensure_openharness_env
-    ensure_openharness_env()
-    from openharness.config.paths import get_logs_dir
-    from openharness.services.cron_scheduler import is_scheduler_running
+    # cron 网关：openharness 接触面收敛于此，内部已幂等收拢配置目录。
+    from ...tasks.cron_gateway import get_logs_dir, is_scheduler_running
 
     if is_scheduler_running():
         logger.info("检测到外部 cron 调度器已在运行，跳过托管启动")

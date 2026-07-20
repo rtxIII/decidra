@@ -24,7 +24,7 @@ from ..strategy.config import (
     load_config,
     normalize_news_radar_config,
 )
-from ..utils.global_vars import PATH_REPO_ROOT, ensure_openharness_env, get_logger
+from ..utils.global_vars import PATH_REPO_ROOT, get_logger
 
 logger = get_logger("tasks_registry")
 
@@ -112,8 +112,7 @@ def sync_jobs(config: Optional[Dict[str, Any]] = None) -> Dict[str, List[str]]:
     Raises:
         ValueError: 任一 job 的 cron 表达式非法（整批拒绝，不做半同步）。
     """
-    ensure_openharness_env()
-    from openharness.services.cron import (
+    from .cron_gateway import (
         delete_cron_job,
         load_cron_jobs,
         upsert_cron_job,

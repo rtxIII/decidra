@@ -22,24 +22,13 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 
 from .china_a import ChinaAEngine
 from .global_equity import GlobalEquityEngine
-from .loader import FetcherLoader
+from .loader import FetcherLoader, detect_market as _detect_market
 from .runner import run_and_persist
 from .signal import CzscSignalEngine
 
 logger = logging.getLogger(__name__)
 
 _STRATEGIES = ("czsc_resonance",)
-
-
-def _detect_market(code: str) -> str:
-    """按代码判市场：``a``（A股）/``hk``（港股）/``us``（美股/其它）。"""
-    c = code.upper()
-    if c.endswith(".HK") or c.startswith("HK."):
-        return "hk"
-    base = c.split(".")[0]
-    if base.isdigit() and len(base) == 6:
-        return "a"
-    return "us"
 
 
 def _resolve_market(symbols: Sequence[str], override: Optional[str]) -> str:

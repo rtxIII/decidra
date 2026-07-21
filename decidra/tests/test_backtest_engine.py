@@ -511,6 +511,66 @@ class TestBacktestCLI(unittest.TestCase):
         self.assertTrue(any("AAPL" in msg for msg in cm.output))
 
 
+class TestLoaderMarketRouting(unittest.TestCase):
+    """港美股绕开 A 股链、直取 yfinance；A 股走 manager 链（修 Tdx 静默误取港股）。"""
+
+    def _fake_manager_frame(self):
+        return (
+            _synthetic_ohlc(rows=30).reset_index().rename(columns={"index": "date"}),
+            "faketdx",
+        )
+
+    def _loaders(self, calls):
+        from decidra.strategy.backtest.loader import FetcherLoader
+
+        def fake_yf(yf_code, start, end):
+            calls["yf"].append(yf_code)
+            return _synthetic_ohlc(rows=30)
+
+        outer = self
+
+        class _FakeManager:
+            def get_daily_data(self, stock_code, start_date=None, end_date=None, days=30):
+                calls["mgr"].append(stock_code)
+                return outer._fake_manager_frame()
+
+        return FetcherLoader(manager=_FakeManager(), yfinance_fetch=fake_yf)
+
+    def test_to_yfinance_code(self) -> None:
+        from decidra.strategy.backtest.loader import _to_yfinance_code
+
+        self.assertEqual(_to_yfinance_code("0700.HK"), "0700.HK")
+        self.assertEqual(_to_yfinance_code("HK.00700"), "0700.HK")
+        self.assertEqual(_to_yfinance_code("HK.09988"), "9988.HK")
+        self.assertEqual(_to_yfinance_code("AAPL"), "AAPL")
+        self.assertEqual(_to_yfinance_code("US.AAPL"), "AAPL")
+
+    def test_hk_routes_to_yfinance_not_manager(self) -> None:
+        calls = {"yf": [], "mgr": []}
+        loader = self._loaders(calls)
+        data = loader.fetch(["0700.HK"], "2023-01-02", "2023-03-01")
+        self.assertEqual(calls["yf"], ["0700.HK"])  # 港股走 yfinance
+        self.assertEqual(calls["mgr"], [])          # 未误入 A 股链（Tdx 静默误取的根因）
+        self.assertEqual(loader.sources["0700.HK"], "yfinance")
+        self.assertIn("0700.HK", data)
+
+    def test_us_routes_to_yfinance(self) -> None:
+        calls = {"yf": [], "mgr": []}
+        loader = self._loaders(calls)
+        loader.fetch(["AAPL"], "2023-01-02", "2023-03-01")
+        self.assertEqual(calls["yf"], ["AAPL"])
+        self.assertEqual(calls["mgr"], [])
+        self.assertEqual(loader.sources["AAPL"], "yfinance")
+
+    def test_a_share_routes_to_manager(self) -> None:
+        calls = {"yf": [], "mgr": []}
+        loader = self._loaders(calls)
+        loader.fetch(["600000"], "2023-01-02", "2023-03-01")
+        self.assertEqual(calls["mgr"], ["600000"])  # A 股走原链
+        self.assertEqual(calls["yf"], [])
+        self.assertEqual(loader.sources["600000"], "faketdx")
+
+
 class TestJsonSafe(unittest.TestCase):
     """L3：_json_safe 处理 numpy 标量与 NaN/Inf。"""
 

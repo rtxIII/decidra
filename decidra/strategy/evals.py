@@ -323,17 +323,25 @@ def _within_window(bar_dt: str, cutoff: datetime) -> bool:
         return False
 
 
-def _rate_result(flags: List[bool]) -> Dict[str, Any]:
-    """命中率 + 样本数；样本不足 MIN_REPORT_SAMPLE 时 rate 为 null。"""
+def _rate_result(
+    flags: List[bool], min_sample: int = MIN_REPORT_SAMPLE
+) -> Dict[str, Any]:
+    """命中率 + 样本数；样本不足 min_sample 时 rate 为 null。
+
+    聚合度量用默认阈值（避免误导性数值）；按标的钻取用 min_sample=1（n 随行
+    展示，由读者按样本量自行判断）。
+    """
     n = len(flags)
-    if n < MIN_REPORT_SAMPLE:
+    if n < min_sample:
         return {"rate": None, "n": n}
     return {"rate": round(sum(1 for flag in flags if flag) / n, 4), "n": n}
 
 
-def _mean_result(values: List[float]) -> Dict[str, Any]:
+def _mean_result(
+    values: List[float], min_sample: int = MIN_REPORT_SAMPLE
+) -> Dict[str, Any]:
     n = len(values)
-    if n < MIN_REPORT_SAMPLE:
+    if n < min_sample:
         return {"avg": None, "n": n}
     return {"avg": round(sum(values) / n, 6), "n": n}
 
@@ -385,6 +393,23 @@ def report(
         for action in _DIRECTIONAL_ACTIONS
     }
 
+    # 按标的钻取（(symbol, action) 分组，样本天然小故 min_sample=1、始终展示 + 附 n）
+    symbol_groups: Dict[Tuple[str, str], List[dict]] = {}
+    for outcome in deduped:
+        symbol_groups.setdefault(
+            (outcome.get("symbol"), outcome.get("action")), []
+        ).append(outcome)
+    by_symbol: Dict[str, Dict[str, Any]] = {}
+    for (symbol, action), rows in symbol_groups.items():
+        by_symbol.setdefault(symbol, {})[action] = {
+            "hit_rate": _rate_result(
+                [bool(r.get("direction_correct")) for r in rows], min_sample=1
+            ),
+            "avg_forward_return": _mean_result(
+                [float(r.get("forward_return", 0.0)) for r in rows], min_sample=1
+            ),
+        }
+
     # AI 增量：研判过且有 outcome 的告警（alert_id 级，逐条人工判断不去重）
     enriched: List[Tuple[dict, dict]] = []
     for alert_id, enrichment in enrichments.items():
@@ -416,6 +441,7 @@ def report(
         "as_of": now.isoformat(timespec="seconds"),
         "signal_hit_rate": signal_hit,
         "avg_forward_return": avg_forward_return,
+        "by_symbol": by_symbol,
         "enriched_hit_rate": _rate_result(support_flags),
         "veto_avoid_rate": _rate_result(veto_flags),
         "confidence_calibration": calibration,

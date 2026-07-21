@@ -360,6 +360,31 @@ def _fmt_avg(result: Optional[dict]) -> str:
     return f"{body}(n={n})"
 
 
+# 标的分化行只纳入样本量达阈值的 (symbol, action)，避免 n=1 噪声进标题
+_SYMBOL_LINE_MIN_SAMPLE = 3
+
+
+def format_evals_symbol_line(report: dict) -> Optional[str]:
+    """按标的的最佳/最差前向收益一行；达阈值的分组不足 2 个时返回 None（不展示）。"""
+    by_symbol = report.get("by_symbol") or {}
+    cells = []
+    for symbol, actions in by_symbol.items():
+        for action, stats in (actions or {}).items():
+            avg = stats.get("avg_forward_return") or {}
+            value, n = avg.get("avg"), avg.get("n", 0)
+            if isinstance(value, (int, float)) and n >= _SYMBOL_LINE_MIN_SAMPLE:
+                cells.append((value, symbol, action, n))
+    if len(cells) < 2:
+        return None
+    cells.sort()
+    worst, best = cells[0], cells[-1]
+    return (
+        f"      [dim]标的分化[/] 最佳 {best[1]} {best[2]} "
+        f"[green]{best[0] * 100:+.1f}%[/](n={best[3]}) ｜ 最差 {worst[1]} {worst[2]} "
+        f"[red]{worst[0] * 100:+.1f}%[/](n={worst[3]})"
+    )
+
+
 def format_evals_summary_lines(report: dict) -> List[str]:
     """评测报告 → 启动概况的两行摘要（Rich markup）。"""
     window = report.get("window_days", "?")
@@ -465,7 +490,11 @@ def build_startup_lines(
         try:
             from .evals import report as evals_report
 
-            lines.extend(format_evals_summary_lines(evals_report(config=config)))
+            evals_data = evals_report(config=config)
+            lines.extend(format_evals_summary_lines(evals_data))
+            symbol_line = format_evals_symbol_line(evals_data)
+            if symbol_line:
+                lines.append(symbol_line)
         except Exception:  # noqa: BLE001 - 概况非关键路径，任何异常降级为不展示
             pass
 

@@ -341,6 +341,37 @@ class TestReport(_EvalsFileCase):
         self.assertIsNone(report["signal_hit_rate"]["rate"])
         self.assertEqual(report["total_outcomes"], 0)
 
+    def test_by_symbol_breakdown(self):
+        # 两标的：A 全命中、B 全未命中；按 (symbol, action) 分组独立统计
+        outcomes = {}
+        for i in range(3):
+            outcomes[f"a{i}"] = self._make_outcome(
+                "HK.00700", "BUY", f"2024-06-2{i}T00:00:00", True, ret=0.05
+            )
+        for i in range(3):
+            outcomes[f"b{i}"] = self._make_outcome(
+                "HK.06082", "BUY", f"2024-06-2{i}T00:00:00", False, ret=-0.10
+            )
+        self._write_outcomes(outcomes)
+        by_symbol = self._report()["by_symbol"]
+        # 小样本仍展示（min_sample=1），rate 不为 null
+        self.assertEqual(by_symbol["HK.00700"]["BUY"]["hit_rate"]["rate"], 1.0)
+        self.assertEqual(by_symbol["HK.06082"]["BUY"]["hit_rate"]["rate"], 0.0)
+        self.assertAlmostEqual(
+            by_symbol["HK.00700"]["BUY"]["avg_forward_return"]["avg"], 0.05
+        )
+        self.assertEqual(by_symbol["HK.00700"]["BUY"]["hit_rate"]["n"], 3)
+
+    def test_by_symbol_dedupe(self):
+        # 同 (symbol, action, bar_dt) 双 id → 该标的计一次
+        outcomes = {
+            "x0": self._make_outcome("HK.00700", "BUY", "2024-06-25T00:00:00", True),
+            "x0b": self._make_outcome("HK.00700", "BUY", "2024-06-25T00:00:00", True),
+        }
+        self._write_outcomes(outcomes)
+        by_symbol = self._report()["by_symbol"]
+        self.assertEqual(by_symbol["HK.00700"]["BUY"]["hit_rate"]["n"], 1)
+
 
 class TestDecoupling(_EvalsFileCase):
 
@@ -415,6 +446,31 @@ class TestDisplaySummary(unittest.TestCase):
         text = "\n".join(lines)
         self.assertIn("62%", text)
         self.assertIn("—", text)  # null 度量显示破折号
+
+    def test_symbol_line_best_worst(self):
+        from decidra.strategy.display import format_evals_symbol_line
+
+        report = {
+            "by_symbol": {
+                "HK.00100": {"SELL": {"avg_forward_return": {"avg": 0.20, "n": 13}}},
+                "HK.07688": {"BUY": {"avg_forward_return": {"avg": -0.19, "n": 5}}},
+            }
+        }
+        line = format_evals_symbol_line(report)
+        self.assertIsNotNone(line)
+        self.assertIn("HK.00100", line)  # 最佳
+        self.assertIn("HK.07688", line)  # 最差
+
+    def test_symbol_line_skips_small_sample(self):
+        from decidra.strategy.display import format_evals_symbol_line
+
+        # 均 n<3，达阈值分组不足 2 个 → 不展示
+        report = {
+            "by_symbol": {
+                "HK.00700": {"BUY": {"avg_forward_return": {"avg": 0.05, "n": 2}}},
+            }
+        }
+        self.assertIsNone(format_evals_symbol_line(report))
 
 
 @unittest.skipUnless(

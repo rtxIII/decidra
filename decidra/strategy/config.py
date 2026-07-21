@@ -20,6 +20,8 @@ MIN_NEWS_RADAR_POLL_INTERVAL_SECONDS = 120
 NEWS_RADAR_URL_SCHEMES = frozenset({"http", "https"})
 SUPPORTED_NEWS_RADAR_API_FORMATS = frozenset({"openai", "openai_compat"})
 NEWS_RADAR_CREDENTIAL_FIELDS = frozenset({"api_key"})
+MIN_EVALS_HORIZON_DAYS = 1
+MIN_EVALS_REPORT_WINDOW_DAYS = 1
 
 # 默认配置。watchlist 为富途代码；cron 调度器随 monitor 启停，
 # 表达式不限定交易时段——monitor 开着即轮询，盘外无新 K 线由去重抑制。
@@ -45,6 +47,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         ],
         "base_url": "https://newsnow.we2.xyz",
         "llm_profile": "deepseeker",
+    },
+    # 告警/研判结果回收与评测（enrich-evals）：每日回填前向结果，产滚动命中率。
+    # 无凭证、无 API 成本（仅取数），schedule 按 UTC 语义每日一次。
+    "evals": {
+        "enabled": True,
+        "horizon_days": 5,
+        "report_window": 90,
+        "schedule": "0 22 * * *",
     },
 }
 
@@ -129,6 +139,41 @@ def normalize_news_radar_config(config: Any) -> Dict[str, Any]:
         if not isinstance(llm_profile, str) or not llm_profile.strip():
             raise ValueError("news_radar.llm_profile 必须是 null 或非空字符串")
         normalized_config["llm_profile"] = llm_profile.strip()
+
+    return normalized_config
+
+
+def normalize_evals_config(config: Any) -> Dict[str, Any]:
+    """合并并校验 evals 局部配置（与默认浅合并，逐字段类型/范围校验）。"""
+    if not isinstance(config, dict):
+        raise ValueError("evals 必须是字典")
+    _reject_credential_fields(config, "evals")
+
+    normalized_config = copy.deepcopy(DEFAULT_CONFIG["evals"])
+    normalized_config.update(config)
+
+    if type(normalized_config["enabled"]) is not bool:
+        raise ValueError("evals.enabled 必须是布尔值")
+
+    horizon_days = normalized_config["horizon_days"]
+    if type(horizon_days) is not int or horizon_days < MIN_EVALS_HORIZON_DAYS:
+        raise ValueError(
+            f"evals.horizon_days 必须是大于等于 {MIN_EVALS_HORIZON_DAYS} 的整数"
+        )
+
+    report_window = normalized_config["report_window"]
+    if (
+        type(report_window) is not int
+        or report_window < MIN_EVALS_REPORT_WINDOW_DAYS
+    ):
+        raise ValueError(
+            f"evals.report_window 必须是大于等于 {MIN_EVALS_REPORT_WINDOW_DAYS} 的整数"
+        )
+
+    schedule = normalized_config["schedule"]
+    if not isinstance(schedule, str) or not schedule.strip():
+        raise ValueError("evals.schedule 必须是非空字符串")
+    normalized_config["schedule"] = schedule.strip()
 
     return normalized_config
 
@@ -233,6 +278,7 @@ def load_config(path: Path = CONFIG_PATH) -> Dict[str, Any]:
     merged["news_radar"] = normalize_news_radar_config(
         config.get("news_radar", {})
     )
+    merged["evals"] = normalize_evals_config(config.get("evals", {}))
     return merged
 
 

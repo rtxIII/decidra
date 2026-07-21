@@ -104,6 +104,30 @@ def build_server() -> FastMCP:
         except Exception as exc:
             return _err(exc)
 
+    @mcp.tool()
+    def strategy_evals_report(window: int = 0) -> str:
+        """告警/研判前向结果评测报告（滚动命中率 + 置信度校准 + AI 增量价值）。
+
+        联立回填结果（``outcomes.json``）与研判结论（``enrichments.json``）产出：
+        signal_hit_rate（规则告警方向命中率，全量基准）、avg_forward_return（按
+        BUY/SELL 分动作平均前向收益）、enriched_hit_rate（AI"支持"的命中率）、
+        veto_avoid_rate（AI"反对"中事后确属坏信号的比例，AI 增量价值核心）、
+        confidence_calibration（高/中/低置信度分桶命中率）。
+
+        前向收益为收盘→收盘纸面收益（非可成交）。AI 增量三项仅覆盖人工研判过的
+        告警，样本不足时对应 rate 为 null（须如实说明"样本不足、暂无结论"）。
+
+        Args:
+            window: 滚动窗口自然日；<=0 时读配置默认（evals.report_window）。
+        """
+        from ..strategy import evals as evals_mod
+
+        try:
+            report = evals_mod.report(window=window if window > 0 else None)
+            return _ok(report)
+        except Exception as exc:
+            return _err(exc)
+
     return mcp
 
 

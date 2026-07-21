@@ -158,6 +158,7 @@ decidra/tests/*
 !decidra/tests/test_bundled_skills.py
 !decidra/tests/test_backtest_engine.py
 !decidra/tests/test_cron_gateway.py
+!decidra/tests/test_strategy_evals.py
 
 
 # 独立仓库/外部项目副本

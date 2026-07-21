@@ -340,6 +340,47 @@ def build_enrich_prompt(alert: dict) -> str:
     )
 
 
+def _fmt_rate(result: Optional[dict]) -> str:
+    """命中率结果 → "62%(n=21)"；rate 为 null（样本不足）显示 "—(n=k)"。"""
+    if not isinstance(result, dict):
+        return "—"
+    rate = result.get("rate")
+    n = result.get("n", 0)
+    body = f"{rate * 100:.0f}%" if isinstance(rate, (int, float)) else "—"
+    return f"{body}(n={n})"
+
+
+def _fmt_avg(result: Optional[dict]) -> str:
+    """平均前向收益结果 → "+1.2%(n=8)"；样本不足显示 "—(n=k)"。"""
+    if not isinstance(result, dict):
+        return "—"
+    avg = result.get("avg")
+    n = result.get("n", 0)
+    body = f"{avg * 100:+.1f}%" if isinstance(avg, (int, float)) else "—"
+    return f"{body}(n={n})"
+
+
+def format_evals_summary_lines(report: dict) -> List[str]:
+    """评测报告 → 启动概况的两行摘要（Rich markup）。"""
+    window = report.get("window_days", "?")
+    horizon = report.get("horizon_days", "?")
+    avg = report.get("avg_forward_return") or {}
+    calibration = report.get("confidence_calibration") or {}
+    return [
+        (
+            f"   [bold cyan]📊 评测[/]（近 {window} 日, T+{horizon}）: "
+            f"信号命中 {_fmt_rate(report.get('signal_hit_rate'))} ｜ "
+            f"前向收益 BUY {_fmt_avg(avg.get('BUY'))} / SELL {_fmt_avg(avg.get('SELL'))}"
+        ),
+        (
+            f"      [dim]AI 支持命中[/] {_fmt_rate(report.get('enriched_hit_rate'))} ｜ "
+            f"[dim]反对规避[/] {_fmt_rate(report.get('veto_avoid_rate'))} ｜ "
+            f"[dim]校准[/] 高 {_fmt_rate(calibration.get('高'))} / "
+            f"中 {_fmt_rate(calibration.get('中'))} / 低 {_fmt_rate(calibration.get('低'))}"
+        ),
+    ]
+
+
 def _load_cron_jobs_by_name(jobs_path: Path) -> dict:
     """一次读入 cron 注册表，name → job（供多策略循环查询，避免逐策略重读文件）。"""
     if not jobs_path.exists():
@@ -418,6 +459,15 @@ def build_startup_lines(
             color = "green" if status == "success" else "red"
             line += f" ｜ 上次 {_fmt_dt(hist.get('started_at'))} [{color}]{status}[/]"
         lines.append(line)
+
+    # 评测摘要（懒加载，只读 outcomes/enrichments，失败不阻塞启动概况）
+    if (config.get("evals") or {}).get("enabled", True):
+        try:
+            from .evals import report as evals_report
+
+            lines.extend(format_evals_summary_lines(evals_report(config=config)))
+        except Exception:  # noqa: BLE001 - 概况非关键路径，任何异常降级为不展示
+            pass
 
     recent = read_recent_alerts(recent_n, alerts_path)
     if recent:

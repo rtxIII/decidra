@@ -402,6 +402,9 @@ class TestInstallCron(unittest.TestCase):
             {"name": "disabled_one", "enabled": False},
         ],
         "cron": {"schedule": "*/30 1-8 * * 1-5"},
+        # 关掉 evals 单例，使本用例断言聚焦策略 job（evals 注册另见
+        # test_strategy_evals.TestRegistryWiring）
+        "evals": {"enabled": False},
     }
 
     def test_build_jobs_per_strategy_with_schedule_override(self):

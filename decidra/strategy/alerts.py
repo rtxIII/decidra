@@ -125,6 +125,13 @@ def read_recent_alerts(n: int = 5, path: Path = ALERTS_PATH) -> List[dict]:
     return records[-n:]
 
 
+def read_all_alerts(path: Path = ALERTS_PATH) -> List[dict]:
+    """读取全部告警（全文件解析，供评测回填全量扫描；jsonl 无轮转）。"""
+    if not path.exists():
+        return []
+    return _parse_jsonl(path.read_text(encoding="utf-8"))
+
+
 def find_alert(alert_id: str, path: Optional[Path] = None) -> Optional[dict]:
     """按短码 id 查找告警（多条同 id 时取最后一条，找不到返回 None）。"""
     path = path or ALERTS_PATH

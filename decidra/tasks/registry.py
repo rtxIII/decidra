@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 from ..strategy.config import (
     DEFAULT_CONFIG,
     load_config,
+    normalize_evals_config,
     normalize_news_radar_config,
 )
 from ..utils.global_vars import PATH_REPO_ROOT, get_logger
@@ -32,6 +33,9 @@ logger = get_logger("tasks_registry")
 JOB_PREFIX = "decidra_"
 STRATEGY_JOB_PREFIX = "decidra_strategy_"
 NEWS_RADAR_JOB_NAME = "decidra_news_radar"
+# 评测回填单例；带 decidra_strategy_ 前缀，故 sync_jobs 的前缀所有权自动纳管
+# （禁用时即被前缀清理捕获），无需并入 MANAGED_SINGLETON_JOB_NAMES。
+EVALS_JOB_NAME = f"{STRATEGY_JOB_PREFIX}evals"
 LEGACY_JOB_NAMES = frozenset({"decidra_strategy_scan"})
 MANAGED_SINGLETON_JOB_NAMES = LEGACY_JOB_NAMES | {NEWS_RADAR_JOB_NAME}
 # 策略与顶层 cron.schedule 均未配置时的兜底扫描频率（单一事实来源：strategy.config）
@@ -93,6 +97,18 @@ def build_jobs(config: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
             "schedule": news_radar_config["schedule"],
             "command": (
                 f'"{sys.executable}" -m decidra.strategy.news_radar run'
+            ),
+            "cwd": str(PATH_REPO_ROOT),
+            "enabled": True,
+        })
+
+    evals_config = normalize_evals_config(config.get("evals") or {})
+    if evals_config["enabled"]:
+        jobs.append({
+            "name": EVALS_JOB_NAME,
+            "schedule": evals_config["schedule"],
+            "command": (
+                f'"{sys.executable}" -m decidra.strategy.evals backfill'
             ),
             "cwd": str(PATH_REPO_ROOT),
             "enabled": True,
